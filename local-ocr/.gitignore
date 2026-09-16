@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+*.pyc
+logs/
+.pytest_cache/
+
+# Sample receipts/invoices may contain real personal or financial data --
+# never commit them, even to a private repo. Keep them local only.
+tests/fixtures/*
+!tests/fixtures/.gitkeep

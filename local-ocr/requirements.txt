@@ -1,0 +1,4 @@
+mcp==1.9.4
+pytesseract==0.3.13
+Pillow==11.3.0
+pdf2image==1.17.0
