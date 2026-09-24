@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+logs/
+.pytest_cache/
+
+# Service account key files -- never commit credentials, even to a
+# private repo. Keep them outside this repo, or in a gitignored folder
+# such as secrets/ if you keep them alongside the code.
+secrets/
+*.json

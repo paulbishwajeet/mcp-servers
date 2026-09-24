@@ -13,5 +13,7 @@ and README -- add the ones you need to any agent profile's config.
 - **[local-ocr](local-ocr/)** -- fully offline OCR for receipt/invoice
   images and PDFs via Tesseract. No network calls, no cloud vision APIs;
   only plain extracted text ever leaves the server.
+- **[google-workspace](google-workspace/)** -- appends expense rows to a
+  Google Sheet, using a service account so it can run unattended.
 
 More servers will be added here over time.
