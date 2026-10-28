@@ -1,0 +1,10 @@
+*.mp3
+*.m4a
+*.wav
+*.mp4
+*.webm
+*.sqlite
+*.db
+.env
+secrets/
+.DS_Store

@@ -1,0 +1,24 @@
+mcp
+# Unpinned on purpose: YouTube changes often; upgrade with `pip install -U "yt-dlp[default]"`.
+# [default] pulls in yt-dlp-ejs, the JS challenge-solver scripts YouTube now requires
+# (run by node or deno, see YTDLP_JS_RUNTIME).
+yt-dlp[default]
+librosa
+soundfile
+mutagen
+numpy
+requests
+beautifulsoup4
+rapidfuzz
+
+# --- Intel Mac (macOS x86_64) pins ---------------------------------------------
+# numba 0.63+ and llvmlite 0.46+ publish no macOS x86_64 wheels, so pip would try
+# to build LLVM from source. 0.62.1 / 0.45.1 are the newest with Intel Mac wheels
+# (cp310-cp313). Drop these pins on Apple Silicon or once Intel wheels return.
+numba==0.62.1
+llvmlite==0.45.1
+# numba 0.62.1 requires numpy < 2.4 (numpy 2.5 itself still ships Intel wheels).
+numpy<2.4
+# cryptography (pulled in by mcp's pyjwt[crypto]): 49.0.0+ ships no macOS x86_64
+# wheel, so pip would compile it with Rust. 48.0.1 has a universal2 wheel.
+cryptography<49

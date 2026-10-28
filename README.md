@@ -15,5 +15,9 @@ and README -- add the ones you need to any agent profile's config.
   only plain extracted text ever leaves the server.
 - **[google-workspace](google-workspace/)** -- appends expense rows to a
   Google Sheet, using a service account so it can run unattended.
+- **[karaoke-tools](karaoke-tools/)** -- repertoire tooling for the
+  KaraokeGayak profile: schema-validated CSV catalog, librosa audio analysis,
+  YouTube karaoke links (yt-dlp), lyrics fetching and Wikipedia soundtrack
+  lookup. No LLM calls.
 
 More servers will be added here over time.

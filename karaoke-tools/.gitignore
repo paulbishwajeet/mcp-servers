@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+
+# Audio never belongs in git.
+*.mp3
+*.wav
+*.m4a
+*.webm
