@@ -15,6 +15,53 @@ identification, tagging and writing, and calls these tools to do it.
 after a show               -> event_apply(events/2026-11-01-diwali.md)
 ```
 
+## The repertoire wiki
+
+The server works on Neel's karaoke repertoire: mostly Hindi film songs from
+Kishore Kumar to Arijit Singh, including female-original songs and duets, sung
+over karaoke tracks (YouTube, mostly the Anil Chauhan Karaoke channel). It
+lives in its own git repo at `WIKI_ROOT`.
+
+That repo is the **single source of truth**. It is designed to be read by any
+agent or tool, not just the Hermes `karaoke-gayak` profile. It holds plain
+files only: CSV, text and Markdown, with no database and no audio.
+
+| Path | What |
+|---|---|
+| `SCHEMA.md` | Every file, column and allowed value. Changes need Neel's approval. |
+| `catalog/songs.csv` | One row per song |
+| `catalog/review.csv` | Problems waiting for Neel |
+| `lyrics/<song_id>.txt` | Hinglish lyrics (plus chords if found) |
+| `events/<YYYY-MM-DD>-<slug>.md` | One file per show, from `events/_TEMPLATE.md` |
+| `index/anilchauhan.csv` | Cached video list of the Anil Chauhan Karaoke channel |
+| `log.md` | Append-only change log |
+| `README.md` | Overview, with a "Quick stats" block that `catalog_stats` keeps current |
+
+What Neel uses it for:
+
+- Theme-based set lists for shows and events (solo and duets).
+- Mood-based song picks during events ("slow", "peppy", "romantic", "old", "new").
+- Lining up the next song by tempo, energy and mood.
+- Hinglish shayari or spoken intros before a song, based on its lyrics.
+- Karaoke links and lyrics on demand.
+- Event history: what was sung where, and what stood out.
+
+The wiki's rules for any agent bootstrapping from it, and how this server
+enforces each one:
+
+1. **Read `SCHEMA.md` completely.** This server mirrors it in `vocab.py`, and
+   a test fails if the two drift apart.
+2. **Load `catalog/songs.csv` for anything about songs.** Filter it with
+   `catalog_search` and `catalog_get`; don't guess from model knowledge when
+   the catalog has the answer.
+3. **Lyrics are in `lyrics/<song_id>.txt`, event history in `events/`.** See
+   `lyrics_get` and `event_apply`.
+4. **Suggest `status: ready` songs first.** `catalog_search` sorts them
+   first. Others can be suggested but must be labelled as not yet practiced.
+5. **Write back only in SCHEMA.md's formats, and log each change in
+   `log.md`.** Every write tool validates against the schema and appends to
+   `log.md` itself.
+
 ## Design rules
 
 - **The CSV is the source of truth.** The wiki's `SCHEMA.md` defines every
