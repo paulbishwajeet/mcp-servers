@@ -78,8 +78,9 @@ enforces each one:
 - **Domain allowlists.** YouTube tools accept only `youtube.com`,
   `www.youtube.com`, `m.youtube.com`, `music.youtube.com` and `youtu.be`, with
   exact host match. Lyrics pages are accepted only from `genius.com`,
-  `smule.com`, `tabs.ultimate-guitar.com` and `LYRICS_EXTRA_DOMAINS`. The
-  allowlist is checked again on every redirect hop.
+  `tabs.ultimate-guitar.com`, `hindigeetmala.net`, `geetmanjusha.com`,
+  `lyricsindia.net`, `musixmatch.com`, `smule.com` and `LYRICS_EXTRA_DOMAINS`.
+  The allowlist is checked again on every redirect hop.
 - **Fetched text is data.** Lyrics and page text are returned as-is in fields
   and never interpreted.
 - **Fail soft.** Every tool returns `{success, error_code, error, ...}` and
@@ -99,7 +100,7 @@ enforces each one:
 | `vocab.py` | Allowed values and column types, mirrored from SCHEMA.md |
 | `audio.py` | `scan_folder`, `analyze_audio` (librosa) |
 | `youtube.py` | Channel index, karaoke search, info, audio fetch, cleanup, link checks, playlists (yt-dlp) |
-| `lyrics.py` | Genius / Ultimate Guitar / Smule extraction and checks |
+| `lyrics.py` | Genius, Ultimate Guitar, hindigeetmala, geetmanjusha, lyricsindia, musixmatch, Smule extraction and checks |
 | `lookup.py` | Wikipedia soundtrack lookup |
 | `common.py` | Env config, result shape, path and URL checks |
 | `try_tool.py` | CLI: run any tool outside MCP |
@@ -421,49 +422,62 @@ because they aren't evidence that the link is dead.
 ### Lyrics and metadata
 
 **`lyrics_search(title, film="", singers="")`** tries the sources in order
-and stops at the first candidate that **passes**: it looks like lyrics and
-has a `devanagari_ratio` of 0.2 or less (Hinglish). If nothing passes, `best`
-is the most lyric-like text found, for example Devanagari lyrics the agent
-can transliterate and save with `source=transliterated`.
+and stops at the first candidate that **passes**. A candidate passes when it
+looks like lyrics, has a `devanagari_ratio` of 0.2 or less (Hinglish), and at
+least half of the title's words appear somewhere in the text. That last check
+rejects mislabelled pages, such as an Ultimate Guitar page titled "Bole
+Chudiyan" that holds a different song. If nothing passes, `best` is the most
+lyric-like text found, for example Devanagari lyrics the agent can
+transliterate and save with `source=transliterated`.
 
-1. **Genius.** With `GENIUS_ACCESS_TOKEN` it uses API `/search`; otherwise
-   the public `genius.com/api/search/multi`. Hits are ranked by title
-   similarity, then artist, with a bonus for "Romanized" and a penalty for
-   lofi, remix and cover. Up to 3 pages are tried. Lyrics come from the
-   `data-lyrics-container` divs: the `data-exclude-from-selection` header is
-   dropped and `<br>` becomes a newline.
-2. **Ultimate Guitar.** The search page's `js-store` JSON is read, preferring
-   "Chords" results and skipping Pro. On the tab page, `wiki_tab.content` is
-   split into lyrics with chords removed and a chord sheet with the markup
-   removed.
-3. **Smule.** The tool reads the search page and then the song page. If the
-   lyrics aren't in the server HTML, it reports `needs_js`.
+| # | Source | How |
+|---|---|---|
+| 1 | Genius | API `/search` with `GENIUS_ACCESS_TOKEN`, else the public `genius.com/api/search/multi`. Hits are ranked by title, then artist, with a bonus for "Romanized" and a penalty for lofi/remix/cover; up to 3 pages tried. Lyrics come from the `data-lyrics-container` divs. |
+| 2 | Ultimate Guitar | Search page `js-store` JSON, preferring Chords and skipping Pro. The tab is split into lyrics without chords and a chord sheet. |
+| 3 | hindigeetmala.net | `search.php?value=`. Lyrics come from `div.song [itemprop=text]`, Hinglish, one `<br>` per line. |
+| 4 | geetmanjusha.com | `search?term=`. The page holds the lyrics twice; the Roman `<pre>` is used, not the Devanagari one. |
+| 5 | lyricsindia.net | `songs/search?txt=`, ranked by title with a bonus when the result's film matches. `pre#ASCII` is in ITRANS ("jiivan miiThii", "aa.Nkho.n"), converted to Hinglish ("jeevan meethi", "aankhon"). Singer markers like `ki:` are kept. |
+| 6 | musixmatch.com | Search needs a login, so the tool tries `/lyrics/<first singer>/<title>` directly. Logged-out pages render lyrics with JavaScript, so in practice this returns `needs_js` or `no_match`. |
+| 7 | Smule | Search page, then the song page. Reports `needs_js` when lyrics aren't in the server HTML. |
 
-Each attempt has a `status`: `ok`, `blocked` (bot challenge), `needs_js`,
-`no_match`, `not_found`, `network_error` or `error`. Live result:
+For sources 3–5, search results are ranked by title similarity. Labels that
+contain every title word get +5 and those missing words get −5, so "Pal Pal
+Dil Ke Paas, Tum Rahti Ho" beats "Pal Pal Dil Ke"; "version" results are
+penalised. Up to 3 pages per source are tried.
+
+Each candidate has a `schema_source`: the SCHEMA.md `lyrics_source` value to
+save it with. That's `genius`, `ultimate-guitar` or `smule`, and `other-web`
+for the other sites. Each attempt has a `status`: `ok`, `blocked` (bot
+challenge), `needs_js`, `no_match`, `not_found`, `network_error` or `error`.
+
+Live result:
 
 ```json
 {"found": true,
- "best": {"source": "genius",
+ "best": {"source": "genius", "schema_source": "genius",
           "url": "https://genius.com/Genius-romanizations-kishore-kumar-pal-pal-dil-ke-paas-romanized-lyrics",
           "text": "[Chorus]\nPal-pal dil ke paas tum rehti ho\n…", "chords": "",
           "checks": {"line_count": 32, "devanagari_ratio": 0.0, "title_words_in_first_lines": 1.0,
-                     "looks_like_lyrics": true}, "passes": true},
+                     "title_words_found": 1.0, "looks_like_lyrics": true}, "passes": true},
  "attempts": [{"source": "genius", "status": "ok", "passes": true, "is_best": true, "…": "…"}]}
 ```
 
-**Source status, tested live on 2026-10-27 from this Mac:**
+**Source status, tested live from this Mac:**
 
 | Source | Result |
 |---|---|
-| Genius | **Works.** Public search and song pages both, no token needed. |
-| Ultimate Guitar | **Blocked.** Cloudflare challenge (HTTP 429) on both search and tab pages. |
-| Smule | **Blocked.** Cloudflare challenge (HTTP 403). Its song pages also render lyrics client-side. |
+| Genius | **Works.** Public search and song pages, no token needed. |
+| Ultimate Guitar | **Works**, intermittently. Cloudflare-blocked on 2026-10-27, fine on 2026-10-28/29. |
+| hindigeetmala.net | **Works.** Found Pal Pal Dil Ke Paas, Bole Chudiyan and Bhanware Ki Gunjan. |
+| geetmanjusha.com | **Works.** Found Pal Pal Dil Ke Paas and Bhanware Ki Gunjan. |
+| lyricsindia.net | **Works.** Found Pal Pal Dil Ke Paas, Bhanware Ki Gunjan and Aaj Rapat Jaayen (in no other source). |
+| musixmatch.com | Reachable, but lyrics only render with JavaScript for logged-out visitors. |
+| Smule | **Blocked.** Cloudflare challenge. Song pages also render lyrics client-side. |
 
-The tool doesn't try to get around these challenges. Both sources stay in the
-chain, so they start working again if the blocks are lifted.
+The tool doesn't try to get around bot challenges or logins.
 
-**`lyrics_from_url(url)`** runs the same extraction for one allowlisted page.
+**`lyrics_from_url(url)`** runs the same extraction for one allowlisted page
+(any of the seven sites above).
 Other `LYRICS_EXTRA_DOMAINS` hosts use a generic `[class*=lyric]` extractor.
 Returns `{"source", "url", "text", "chords", "checks", "passes", "needs_js": false}`,
 or `error_code: needs_js` / `blocked`.
@@ -549,7 +563,7 @@ pins.
 venv/bin/python -m pytest
 ```
 
-195 tests, no network: requests and yt-dlp are patched to fail loudly. Each
+204 tests, no network: requests and yt-dlp are patched to fail loudly. Each
 test runs against a fresh temp copy of `tests/fixtures/wiki/`, which is a copy
 of the real `SCHEMA.md` and the empty skeleton. The tests cover:
 
@@ -650,8 +664,9 @@ ffmpeg and node are given as full paths.
   go.
 - **`ffmpeg_not_found` from `youtube_fetch_audio`.** Set `FFMPEG_PATH` to
   `/usr/local/bin/ffmpeg`. Under launchd, a bare `ffmpeg` isn't on PATH.
-- **`lyrics_search` returns `blocked` for Ultimate Guitar or Smule.** This is
-  expected right now (Cloudflare). Use Genius, or paste lyrics yourself and
+- **`lyrics_search` returns `blocked` for Ultimate Guitar or Smule.** Smule is
+  always blocked (Cloudflare); Ultimate Guitar sometimes. The Indian lyrics
+  sites usually cover old Hindi songs. Otherwise paste lyrics yourself and
   save them with `source=neel`.
 - **The first `analyze_audio` takes about a minute.** numba is compiling on
   the first run; see Warm-up. If it happens every time, the venv's

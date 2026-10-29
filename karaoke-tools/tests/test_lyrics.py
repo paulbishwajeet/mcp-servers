@@ -140,8 +140,11 @@ def test_chain_reports_blocked_and_needs_js(wiki, monkeypatch):
     monkeypatch.setattr(lyrics, "fetch", fake_fetch)
     r = lyrics.lyrics_search("Pal Pal Dil Ke Paas")
     assert r["success"] and not r["found"] and r["best"] is None
-    assert [(a["source"], a["status"]) for a in r["attempts"]] == [
-        ("genius", "blocked"), ("ultimate-guitar", "blocked"), ("smule", "needs_js")]
+    got = [(a["source"], a["status"]) for a in r["attempts"]]
+    assert got[:2] == [("genius", "blocked"), ("ultimate-guitar", "blocked")]
+    assert got[-1] == ("smule", "needs_js")
+    assert [g[0] for g in got] == ["genius", "ultimate-guitar", "hindigeetmala", "geetmanjusha",
+                                   "lyricsindia", "musixmatch", "smule"]
 
 
 def test_one_crashing_source_does_not_break_chain(wiki, monkeypatch):
@@ -187,3 +190,61 @@ def test_ug_strips_empty_parentheses_left_by_chords():
     lyr, _ = lyrics.split_ug_content("([ch]C[/ch])      ([ch]G[/ch])\nDeewana Leke Aaya Hai\n"
                                      "([ch]Am[/ch])\nDil Ka Taraana ([ch]F[/ch])\n\nNext verse")
     assert lyr == "Deewana Leke Aaya Hai\nDil Ka Taraana\n\nNext verse"
+
+
+# --- Indian lyrics sites ------------------------------------------------------------
+
+def test_hindigeetmala_extract_and_search_ranking(wiki, monkeypatch):
+    text = lyrics.extract_hindigeetmala(fixture_text("hindigeetmala_song.html"))
+    assert text.split("\n")[0] == "pal pal dil ke paas, tum rahti ho"
+    assert "\n\nhar shaam" in text and "Advertisement" not in text
+    calls = []
+
+    def fake_fetch(url, headers=None):
+        calls.append(url)
+        page = "hindigeetmala_search.html" if "search.php" in url else "hindigeetmala_song.html"
+        return FakeResp(fixture_text(page))
+
+    monkeypatch.setattr(lyrics, "fetch", fake_fetch)
+    r = lyrics.try_hindigeetmala("Pal Pal Dil Ke Paas", "Blackmail", "Kishore Kumar")
+    assert calls[1] == "https://www.hindigeetmala.net/song/pal_pal_dil_ke_paas.htm"  # not the Palak version
+    assert r[-1]["passes"] and r[-1]["schema_source"] == "other-web"
+
+
+def test_geetmanjusha_takes_roman_block():
+    text = lyrics.extract_geetmanjusha(fixture_text("geetmanjusha_song.html"))
+    assert text.startswith("Pal pal dil ke paas") and lyrics._deva_ratio(text) == 0
+
+
+def test_lyricsindia_itrans_conversion():
+    text = lyrics.extract_lyricsindia(fixture_text("lyricsindia_song.html"))
+    assert "jeevan meethi pyaas" in text
+    assert "aankhon par, teraa aanchal" in text
+    assert "dhadakan bhi" in text and "." not in text.replace("...", "")
+    assert lyrics.itrans_to_hinglish("mai.n saa.ns letaa huu.N") == "main saans letaa hoon"
+    assert lyrics.itrans_to_hinglish("hamen jo utha_iyo to Kud bhii") == "hamen jo uthaiyo to khud bhi"
+
+
+def test_musixmatch_needs_js_without_body():
+    html = '<script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{"x":1}}}</script>'
+    assert lyrics.extract_musixmatch(html) == ""
+    body = "Pal pal dil ke paas tum rehti ho\\n" * 5
+    html = ('<script id="__NEXT_DATA__" type="application/json">{"a":{"lyrics":{"body":"'
+            + body + '"}}}</script>')
+    assert lyrics.extract_musixmatch(html).startswith("Pal pal dil ke paas")
+
+
+def test_mislabelled_page_does_not_pass():
+    """A page full of lyrics that never mentions the title is not this song."""
+    text = "\n".join(f"tum pe hum toh mare ja rahe hain line {i}" for i in range(12))
+    c = lyrics._candidate("ultimate-guitar", "u", text, "Bole Chudiyan")
+    assert c["checks"]["looks_like_lyrics"] and c["checks"]["title_words_found"] == 0
+    assert not c["passes"]
+
+
+@pytest.mark.parametrize("url", ["https://www.hindigeetmala.net/song/x.htm",
+                                 "https://geetmanjusha.com/lyrics/59-x",
+                                 "https://lyricsindia.net/songs/2551",
+                                 "https://www.musixmatch.com/lyrics/A/B"])
+def test_new_sites_allowed(url):
+    assert lyrics.is_allowed_page_url(url)

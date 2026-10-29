@@ -20,7 +20,12 @@ from common import fail, genius_token, log, lyrics_delay_sec, lyrics_extra_domai
 
 # Pages lyrics_from_url accepts (plus LYRICS_EXTRA_DOMAINS and their subdomains).
 PAGE_HOSTS = {"genius.com", "www.genius.com", "smule.com", "www.smule.com",
-              "tabs.ultimate-guitar.com"}
+              "tabs.ultimate-guitar.com",
+              "hindigeetmala.net", "www.hindigeetmala.net", "geetmanjusha.com",
+              "www.geetmanjusha.com", "lyricsindia.net", "www.lyricsindia.net",
+              "musixmatch.com", "www.musixmatch.com"}
+# SCHEMA.md's lyrics_source values; sites without their own value are "other-web".
+SCHEMA_SOURCE = {"genius": "genius", "ultimate-guitar": "ultimate-guitar", "smule": "smule"}
 # Search endpoints the tool itself calls. Not accepted from callers.
 SEARCH_HOSTS = {"api.genius.com", "www.ultimate-guitar.com"}
 
@@ -125,21 +130,31 @@ def lyrics_checks(text: str, title: str = "") -> dict:
     avg = sum(len(ln) for ln in lines) / len(lines) if lines else 0
     looks = (len(lines) >= 8 and 8 <= avg <= 90 and max((len(ln) for ln in lines), default=0) < 300
              and "<" not in text[:2000] and "http" not in " ".join(lines[:20]).lower())
+    all_words = set(_words(text))
+    title_found = round(sum(w in all_words for w in title_words) / len(title_words), 2) \
+        if title_words else None
     return {"line_count": len(lines), "devanagari_ratio": ratio,
-            "title_words_in_first_lines": title_hit, "looks_like_lyrics": bool(looks)}
+            "title_words_in_first_lines": title_hit, "title_words_found": title_found,
+            "looks_like_lyrics": bool(looks)}
 
 
 def _candidate(source: str, url: str, text: str, title: str, chords: str = "",
                status: str = "ok", note: str = "") -> dict:
     text = re.sub(r"\n{3,}", "\n\n", (text or "").replace("\r\n", "\n")).strip()
     checks = lyrics_checks(text, title)
-    passes = checks["looks_like_lyrics"] and checks["devanagari_ratio"] <= HINGLISH_MAX_DEVANAGARI
-    return {"source": source, "url": url, "status": status, "text": text, "chords": chords,
+    # Passing also needs most of the title's words somewhere in the text, so a
+    # mislabelled page (a different song under this title) doesn't win.
+    title_ok = checks["title_words_found"] is None or checks["title_words_found"] >= 0.5
+    passes = (checks["looks_like_lyrics"] and title_ok
+              and checks["devanagari_ratio"] <= HINGLISH_MAX_DEVANAGARI)
+    return {"source": source, "schema_source": SCHEMA_SOURCE.get(source, "other-web"),
+            "url": url, "status": status, "text": text, "chords": chords,
             "checks": checks, "passes": bool(passes), "note": note}
 
 
 def _attempt(source: str, status: str, note: str, url: str = "") -> dict:
-    return {"source": source, "url": url, "status": status, "text": "", "chords": "",
+    return {"source": source, "schema_source": SCHEMA_SOURCE.get(source, "other-web"),
+            "url": url, "status": status, "text": "", "chords": "",
             "checks": {}, "passes": False, "note": note[:300]}
 
 
@@ -370,7 +385,205 @@ def try_smule(title: str, film: str, singers: str) -> list[dict]:
 
 # --- tools ------------------------------------------------------------------------------------------
 
-SOURCES = [("genius", try_genius), ("ultimate-guitar", try_ultimate_guitar), ("smule", try_smule)]
+# --- Indian lyrics sites ------------------------------------------------------------------
+
+def _br_text(el) -> str:
+    for br in el.find_all("br"):
+        br.replace_with("\n")
+    return re.sub(r"[ \t]*\r?\n[ \t]*", "\n", el.get_text()).strip()
+
+
+def _deva_ratio(text: str) -> float:
+    letters = [c for c in text if c.isalpha()]
+    return sum(1 for c in letters if "ऀ" <= c <= "ॿ") / len(letters) if letters else 0.0
+
+
+def _ranked_links(pairs: list[tuple], title: str, max_pages: int = 3) -> list[str]:
+    """(url, label[, bonus]) tuples -> urls of the best title matches, best first.
+    The bonus (e.g. +10 when the result's film matches) only reorders results
+    that already clear MIN_TITLE_SIMILARITY on the title."""
+    scored, seen = [], set()
+    for url, label, *extra in pairs:
+        if url in seen:
+            continue
+        seen.add(url)
+        sim = _similarity(title, label)
+        # Prefer labels holding every title word ("Pal Pal Dil Ke Paas, Tum Rahti
+        # Ho") over shorter ones that only share most of them ("Pal Pal Dil Ke").
+        label_words = set(_words(label))
+        sim += 5 if all(w in label_words for w in _words(title)) else -5
+        if "version" in label.lower() and "version" not in title.lower():
+            sim -= 10
+        if sim >= MIN_TITLE_SIMILARITY:
+            scored.append((sim + (extra[0] if extra else 0), url))
+    scored.sort(key=lambda x: -x[0])
+    return [u for _, u in scored[:max_pages]]
+
+
+def _try_pages(source: str, urls: list[str], extract, title: str) -> list[dict]:
+    out = []
+    for url in urls:
+        try:
+            text = extract(fetch(url).text)
+        except FetchError as e:
+            out.append(_attempt(source, e.code, str(e), url))
+            continue
+        if not text:
+            out.append(_attempt(source, "needs_js", "No lyrics in the server HTML.", url))
+            continue
+        cand = _candidate(source, url, text, title)
+        out.append(cand)
+        if cand["passes"]:
+            break
+    return out
+
+
+def extract_hindigeetmala(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    el = soup.select_one('div.song [itemprop="text"]') or soup.select_one("div.song")
+    return _br_text(el) if el else ""
+
+
+def try_hindigeetmala(title: str, film: str, singers: str) -> list[dict]:
+    url = "https://www.hindigeetmala.net/search.php?value=" + quote(title)
+    try:
+        soup = BeautifulSoup(fetch(url).text, "html.parser")
+    except FetchError as e:
+        return [_attempt("hindigeetmala", e.code, f"search: {e}", url)]
+    pairs = [(urljoin(url, a["href"]), a.get_text(" ", strip=True) or a["href"].split("/")[-1])
+             for a in soup.select('a[href^="/song/"]') if a.get_text(strip=True)]
+    links = _ranked_links(pairs, title)
+    if not links:
+        return [_attempt("hindigeetmala", "no_match", f"No result similar to '{title}'.", url)]
+    return _try_pages("hindigeetmala", links, extract_hindigeetmala, title)
+
+
+def extract_geetmanjusha(html: str) -> str:
+    """The page has the lyrics twice, Devanagari and Roman: take the Roman one."""
+    soup = BeautifulSoup(html, "html.parser")
+    blocks = [_br_text(p) for p in soup.find_all("pre")]
+    blocks = [b for b in blocks if len(b) > 80]
+    if not blocks:
+        return ""
+    return min(blocks, key=_deva_ratio)
+
+
+def try_geetmanjusha(title: str, film: str, singers: str) -> list[dict]:
+    url = "https://geetmanjusha.com/search?term=" + quote(title)
+    try:
+        html = fetch(url).text
+    except FetchError as e:
+        return [_attempt("geetmanjusha", e.code, f"search: {e}", url)]
+    pairs = []
+    for href in re.findall(r'href="(https://geetmanjusha\.com/lyrics/[^"?#]+)"', html):
+        slug = re.sub(r"^\d+-", "", href.rsplit("/", 1)[-1])
+        latin = re.sub(r"[^\x00-\x7f].*$", "", slug).replace("-", " ").strip()
+        pairs.append((href, latin))
+    links = _ranked_links(pairs, title)
+    if not links:
+        return [_attempt("geetmanjusha", "no_match", f"No result similar to '{title}'.", url)]
+    return _try_pages("geetmanjusha", links, extract_geetmanjusha, title)
+
+
+_ITRANS = [(".Nh", "n"), (".N", "n"), (".n", "n"), (".D", "d"), (".h", ""), ("~N", "n"),
+           ("~n", "n"), ("R^i", "ri"), ("Sh", "sh"), ("shh", "sh"), ("T", "t"), ("D", "d"),
+           ("N", "n"), ("L", "l"), ("M", "n"), ("H", "h"), ("K", "kh"), ("G", "gh"),
+           ("_", "")]
+
+
+def itrans_to_hinglish(text: str) -> str:
+    """lyricsindia.net writes lyrics in ITRANS ("jiivan miiThii", "aa.Nkho.n").
+    Convert to everyday Hinglish ("jeevan meethi", "aankhon")."""
+    for a, b in _ITRANS:
+        text = text.replace(a, b)
+    text = re.sub(r"ii\b", "i", text)
+    text = text.replace("ii", "ee").replace("uu", "oo")
+    text = re.sub(r"\.(?=[a-z])", "", text)  # leftover ITRANS dots inside words
+    return text
+
+
+def extract_lyricsindia(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    el = soup.select_one("pre#ASCII") or soup.select_one("pre.lyrics")
+    if not el:
+        return ""
+    lines = [ln.strip() for ln in itrans_to_hinglish(el.get_text().replace("\r", "")).split("\n")]
+    return "\n".join(lines).strip()
+
+
+def try_lyricsindia(title: str, film: str, singers: str) -> list[dict]:
+    url = "https://lyricsindia.net/songs/search?txt=" + quote(title)
+    try:
+        soup = BeautifulSoup(fetch(url).text, "html.parser")
+    except FetchError as e:
+        return [_attempt("lyricsindia", e.code, f"search: {e}", url)]
+    pairs = []
+    for a in soup.select('a[href^="/songs/"]'):
+        if not re.match(r"^/songs/\d+$", a["href"]):
+            continue
+        label = a.get_text(" ", strip=True)  # "देवनागरी - itrans title (Film)"
+        roman = itrans_to_hinglish(label.split(" - ", 1)[-1])
+        film_part = re.search(r"\(([^)]*)\)\s*$", roman)
+        roman = re.sub(r"\([^)]*\)\s*$", "", roman)
+        bonus = 10 if film and film_part and _similarity(film, film_part.group(1)) >= 80 else 0
+        pairs.append((urljoin(url, a["href"]), roman, bonus))
+    links = _ranked_links(pairs, title)
+    if not links:
+        return [_attempt("lyricsindia", "no_match", f"No result similar to '{title}'.", url)]
+    return _try_pages("lyricsindia", links, extract_lyricsindia, title)
+
+
+def _mxm_slug(text: str) -> str:
+    t = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode()
+    return re.sub(r"[^A-Za-z0-9]+", "-", t).strip("-")
+
+
+def extract_musixmatch(html: str) -> str:
+    """Musixmatch renders lyrics client-side for logged-out visitors. Use them
+    only if a lyrics body is present in the page's __NEXT_DATA__ JSON."""
+    soup = BeautifulSoup(html, "html.parser")
+    nd = soup.select_one("script#__NEXT_DATA__")
+    if not nd or not nd.string:
+        return ""
+    try:
+        data = json.loads(nd.string)
+    except ValueError:
+        return ""
+    stack = [data]
+    while stack:
+        o = stack.pop()
+        if isinstance(o, dict):
+            lyr = o.get("lyrics")
+            if isinstance(lyr, dict) and isinstance(lyr.get("body"), str) and len(lyr["body"]) > 80:
+                return lyr["body"].strip()
+            stack.extend(o.values())
+        elif isinstance(o, list):
+            stack.extend(o)
+    return ""
+
+
+def try_musixmatch(title: str, film: str, singers: str) -> list[dict]:
+    """Musixmatch search needs a login, so try the song URL pattern directly:
+    /lyrics/<Artist>/<Title> for the first singer."""
+    artist = (singers.split(";")[0] if singers else "").strip()
+    if not artist:
+        return [_attempt("musixmatch", "no_match", "Needs a singer to build the song URL "
+                         "(search requires a login).")]
+    url = f"https://www.musixmatch.com/lyrics/{_mxm_slug(artist)}/{_mxm_slug(title)}"
+    try:
+        text = extract_musixmatch(fetch(url).text)
+    except FetchError as e:
+        return [_attempt("musixmatch", "no_match" if e.code == "not_found" else e.code, str(e), url)]
+    if not text:
+        return [_attempt("musixmatch", "needs_js", "Lyrics are rendered by JavaScript for "
+                         "logged-out visitors.", url)]
+    return [_candidate("musixmatch", url, text, title)]
+
+
+SOURCES = [("genius", try_genius), ("ultimate-guitar", try_ultimate_guitar),
+           ("hindigeetmala", try_hindigeetmala), ("geetmanjusha", try_geetmanjusha),
+           ("lyricsindia", try_lyricsindia), ("musixmatch", try_musixmatch),
+           ("smule", try_smule)]
 
 
 def lyrics_search(title: str, film: str = "", singers: str = "") -> dict:
@@ -424,6 +637,14 @@ def lyrics_from_url(url: str) -> dict:
             text = ""
     elif host.endswith("smule.com"):
         source, text = "smule", extract_smule(html)
+    elif host.endswith("hindigeetmala.net"):
+        source, text = "hindigeetmala", extract_hindigeetmala(html)
+    elif host.endswith("geetmanjusha.com"):
+        source, text = "geetmanjusha", extract_geetmanjusha(html)
+    elif host.endswith("lyricsindia.net"):
+        source, text = "lyricsindia", extract_lyricsindia(html)
+    elif host.endswith("musixmatch.com"):
+        source, text = "musixmatch", extract_musixmatch(html)
     else:
         source, text = "other-web", extract_generic(html)
     if not text:
