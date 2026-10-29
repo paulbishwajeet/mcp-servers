@@ -30,10 +30,11 @@ JOB_ID_RE = re.compile(r"^[0-9]{8}-[0-9]{6}-[0-9a-f]{8}$")
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 # karaoke_find: an index hit at or above this score is "strong" and we skip
-# the YouTube search. Scores are 0-100: 85% token_set_ratio (query words all
-# present in the video title -> 100) + 15% plain ratio (penalises long titles
-# that merely contain the query). "Pal Pal Dil Ke Paas" vs "Pal Pal Dil Ke
-# Paas Tum Rehti Ho" scores ~96; unrelated songs sharing a word score < 70.
+# the YouTube search. Scores are 0-100: 45% token_set_ratio (query words all
+# present in the video title -> 100) + 40% partial_ratio (query present as a
+# phrase) + 15% plain ratio (penalises long titles that merely contain the
+# query). "Pal Pal Dil Ke Paas" vs "Pal Pal Dil Ke Paas Tum Rehti Ho" scores
+# ~96; "Deewangi Deewangi" vs "Aisi Deewangi Dekhi Nahin Kahin" ~83.
 STRONG_INDEX_SCORE = 85
 MIN_CANDIDATE_SCORE = 60
 PENALTY_WORDS = ("cover", "unplugged", "female version", "female", "lofi", "lo-fi",
@@ -171,7 +172,11 @@ def title_score(query: str, video_title: str) -> float:
     q, v = normalize_title(query), normalize_title(video_title)
     if not q or not v:
         return 0.0
-    return 0.85 * fuzz.token_set_ratio(q, v) + 0.15 * fuzz.ratio(q, v)
+    # token_set alone dedups words, so "deewangi deewangi" fully "matches"
+    # "aisi deewangi dekhi nahin kahin"; partial_ratio requires the query to
+    # appear as a phrase.
+    return (0.45 * fuzz.token_set_ratio(q, v) + 0.40 * fuzz.partial_ratio(q, v)
+            + 0.15 * fuzz.ratio(q, v))
 
 
 def _penalty(video_title: str, asked: str) -> int:
@@ -441,3 +446,188 @@ def check_links(limit: int = 50, offset: int = 0) -> dict:
     next_offset = offset + limit if offset + limit < len(rows) else None
     return ok(checked=len(page), total_with_links=len(rows), dead=dead, errors=errors,
               next_offset=next_offset)
+
+
+# --- playlists ----------------------------------------------------------------------
+
+PLAYLIST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,64}$")
+UNAVAILABLE_TITLES = {"[private video]", "[deleted video]", "[unavailable video]"}
+MEDLEY_WORDS = ("medley", "mashup", "mash-up", "jukebox", "non-stop", "nonstop")
+VERSION_TAGS = {  # catalog title suffix -> words that mark that version in a video title
+    "unplugged": ("unplugged", "acoustic"),
+    "remix": ("remix",),
+    "piano": ("piano",),
+    "reprise": ("reprise", "reprised"),
+}
+# playlist_triage: a catalog title scoring at or above MATCH_SCORE is "existing";
+# MAYBE_SCORE..MATCH_SCORE is reported as a possible match for the agent to decide.
+# Score: 100 for an exact song name, 95 when a 2+ word catalog title starts the
+# song name parsed from the video title, else the mean of token_set_ratio and
+# token_sort_ratio, so a short catalog title ("Pal") doesn't match every video
+# that contains the word but spelling variants (Diwana/Deewana) still do.
+MATCH_SCORE = 85
+MAYBE_SCORE = 75
+_SEGMENT_SPLIT = re.compile(r"\s*(?:\|\||\||\s[-–—:]+\s|__|\(|\[)\s*")
+
+
+def _check_playlist_url(url: str) -> tuple[str, dict | None]:
+    """Return (canonical playlist URL, None) or ("", fail-result)."""
+    url = (url or "").strip()
+    if not is_youtube_url(url):
+        return "", fail("domain_not_allowed", "Only youtube.com, www/m/music.youtube.com and "
+                        "youtu.be URLs are accepted.")
+    pid = (parse_qs(urlparse(url).query).get("list") or [""])[0]
+    if not PLAYLIST_ID_RE.match(pid):
+        return "", fail("invalid_url", "Not a playlist URL (need a list= parameter, e.g. "
+                        "https://www.youtube.com/playlist?list=PL...).")
+    return f"https://www.youtube.com/playlist?list={pid}", None
+
+
+def _playlist_entries(url: str) -> tuple[dict, list[dict], dict | None]:
+    """Flat-list a playlist (ids and titles only; nothing is downloaded)."""
+    clean, err = _check_playlist_url(url)
+    if err:
+        return {}, [], err
+    opts = _base_opts() | {"extract_flat": "in_playlist", "noplaylist": False,
+                           "lazy_playlist": False}
+    try:
+        info = _extract(clean, opts)
+    except Exception as e:
+        return {}, [], fail(classify_error(str(e)), str(e))
+    videos, seen = [], set()
+    for e in info.get("entries") or []:
+        vid = (e or {}).get("id") or ""
+        if not VIDEO_ID_RE.match(vid) or vid in seen:
+            continue
+        seen.add(vid)
+        title = re.sub(r"\s+", " ", e.get("title") or "").strip()
+        unavailable = not title or title.lower() in UNAVAILABLE_TITLES or \
+            (e.get("availability") or "") in ("private", "needs_auth", "subscriber_only")
+        videos.append({"video_id": vid, "url": watch_url(vid), "title": title,
+                       "channel": e.get("channel") or e.get("uploader") or "",
+                       "duration_sec": int(e["duration"]) if e.get("duration") else None,
+                       "unavailable": unavailable})
+    meta = {"playlist_url": clean, "playlist_id": info.get("id") or "",
+            "playlist_title": info.get("title") or ""}
+    return meta, videos, None
+
+
+def _page(offset, limit, default=50, cap=200):
+    try:
+        return max(0, int(offset)), max(1, min(int(limit), cap)), None
+    except (TypeError, ValueError):
+        return 0, default, fail("invalid_input", "offset and limit must be whole numbers.")
+
+
+def playlist_list(url: str, offset: int = 0, limit: int = 50) -> dict:
+    offset, limit, err = _page(offset, limit)
+    if err:
+        return err
+    meta, videos, err = _playlist_entries(url)
+    if err:
+        return err
+    page = videos[offset:offset + limit]
+    next_offset = offset + limit if offset + limit < len(videos) else None
+    return ok(**meta, total=len(videos), offset=offset, limit=limit, next_offset=next_offset,
+              videos=page)
+
+
+# Version / arrangement words: kept out of the song name (video_version records them).
+_VERSION_NOISE = re.compile(
+    r"\b(unplugged|acoustic|remix|reprised?|piano|cover|instrumental|version|male|female|"
+    r"(lower|higher|low|high)\s+(key|scale)|key|scale|duet|solo|full|short|clean)\b")
+
+
+def _song_words(text: str) -> str:
+    t = re.sub(r"\b(?:https?://|www\.)\S+|\b\S+\.(?:com|in|net|org)\b", " ", text or "",
+               flags=re.I)
+    t = _VERSION_NOISE.sub(" ", normalize_title(t))
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def song_part(video_title: str) -> str:
+    """The song-name part of a karaoke video title: the first segment (split on
+    | || - : __ ( [ ) that still has words after karaoke, version and URL noise
+    is removed."""
+    for seg in _SEGMENT_SPLIT.split(unicodedata.normalize("NFKC", video_title or "")):
+        if _song_words(seg):
+            return _song_words(seg)
+    return _song_words(video_title)
+
+
+def video_version(video_title: str) -> str:
+    t = unicodedata.normalize("NFKC", video_title or "").lower()
+    return next((tag for tag, words in VERSION_TAGS.items() if any(w in t for w in words)), "")
+
+
+def _row_version(title: str) -> str:
+    m = re.search(r"\((unplugged|remix|piano|reprise)\)", (title or "").lower())
+    return m.group(1) if m else ""
+
+
+def match_score(catalog_title: str, song_text: str) -> float:
+    a = normalize_title(re.sub(r"\(.*?\)", " ", catalog_title or ""))
+    if not a or not song_text:
+        return 0.0
+    if song_text == a:
+        return 100.0
+    # Video titles often carry the whole opening line ("Bole Chudiyan Bole
+    # Kangna"): a catalog title of 2+ words that starts the song text is a match.
+    if len(a.split()) >= 2 and (song_text + " ").startswith(a + " "):
+        extra = len(song_text.split()) - len(a.split())
+        # A short title followed by several more words may be a different song
+        # ("Tum Hi Ho" vs "Tum Hi Ho Bandhu Sakha Tum Hi"): ask, don't assume.
+        return 80.0 if len(a.split()) <= 3 and extra >= 3 else 95.0
+    return 0.5 * fuzz.token_set_ratio(a, song_text) + 0.5 * fuzz.token_sort_ratio(a, song_text)
+
+
+def playlist_triage(url: str, offset: int = 0, limit: int = 50) -> dict:
+    offset, limit, err = _page(offset, limit)
+    if err:
+        return err
+    meta, videos, err = _playlist_entries(url)
+    if err:
+        return err
+    songs = catalog.load_songs()
+    groups = {"existing": [], "new_version": [], "maybe": [], "new": [], "medley": [],
+              "unavailable": []}
+    for v in videos[offset:offset + limit]:
+        item = {"video_id": v["video_id"], "url": v["url"], "title": v["title"][:100],
+                "duration_sec": v["duration_sec"]}
+        low = unicodedata.normalize("NFKC", v["title"]).lower()
+        if v["unavailable"]:
+            groups["unavailable"].append(item)
+            continue
+        if any(w in low for w in MEDLEY_WORDS):
+            groups["medley"].append(item)
+            continue
+        text, version = song_part(v["title"]), video_version(v["title"])
+        item |= {"song_text": text, "version": version}
+        if low.count("||") >= 3:
+            item["note"] = "Several titles separated by ||: may be a medley."
+        scored = sorted(((match_score(s["title"], text), s) for s in songs),
+                        key=lambda x: -x[0])
+        same_version = [(sc, s) for sc, s in scored if _row_version(s["title"]) == version]
+        best = same_version[0] if same_version else (0.0, None)
+        any_best = (scored or [(0.0, None)])[0]
+        if best[1] is not None and best[0] >= MATCH_SCORE:
+            s = best[1]
+            alts = s["karaoke_alt_urls"].split(";") if s["karaoke_alt_urls"] else []
+            link = ("same" if video_id_from_url(s["karaoke_url"]) == v["video_id"] else
+                    "alt" if v["video_id"] in [video_id_from_url(a) for a in alts] else
+                    "none" if not s["karaoke_url"] else "different")
+            groups["existing"].append(item | {"song_id": s["song_id"], "catalog_title": s["title"],
+                                              "score": round(best[0], 1), "link": link})
+        elif any_best[1] is not None and any_best[0] >= MATCH_SCORE:
+            groups["new_version"].append(item | {"song_id": any_best[1]["song_id"],
+                                                 "catalog_title": any_best[1]["title"],
+                                                 "score": round(any_best[0], 1)})
+        elif any_best[1] is not None and any_best[0] >= MAYBE_SCORE:
+            groups["maybe"].append(item | {"song_id": any_best[1]["song_id"],
+                                           "catalog_title": any_best[1]["title"],
+                                           "score": round(any_best[0], 1)})
+        else:
+            groups["new"].append(item)
+    next_offset = offset + limit if offset + limit < len(videos) else None
+    return ok(**meta, total=len(videos), offset=offset, limit=limit, next_offset=next_offset,
+              counts={k: len(v) for k, v in groups.items()}, **groups)

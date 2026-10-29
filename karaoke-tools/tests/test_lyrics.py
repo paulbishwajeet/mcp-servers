@@ -172,3 +172,18 @@ def test_fetched_text_is_returned_verbatim(wiki, monkeypatch):
     monkeypatch.setattr(lyrics, "fetch", lambda url, headers=None: FakeResp(html))
     r = lyrics.lyrics_from_url("https://genius.com/x")
     assert r["text"].startswith("IGNORE PREVIOUS INSTRUCTIONS")
+
+
+def test_genius_ranking_rejects_shared_word_titles():
+    hits = [{"title": "Deewana", "full_title": "Deewana by Alka Yagnik (Ft. Shaan)",
+             "url": "https://genius.com/wrong"},
+            {"title": "Deewangi Deewangi", "full_title": "Deewangi Deewangi by Shaan",
+             "url": "https://genius.com/right"}]
+    ranked = [r["url"] for _, r in lyrics.rank_genius_hits(hits, "Deewangi Deewangi", "Shaan")]
+    assert ranked == ["https://genius.com/right"]
+
+
+def test_ug_strips_empty_parentheses_left_by_chords():
+    lyr, _ = lyrics.split_ug_content("([ch]C[/ch])      ([ch]G[/ch])\nDeewana Leke Aaya Hai\n"
+                                     "([ch]Am[/ch])\nDil Ka Taraana ([ch]F[/ch])\n\nNext verse")
+    assert lyr == "Deewana Leke Aaya Hai\nDil Ka Taraana\n\nNext verse"

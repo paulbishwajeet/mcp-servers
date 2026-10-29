@@ -216,6 +216,30 @@ def cleanup_job(job_id: str) -> dict:
 
 
 @tool
+def playlist_list(url: str, offset: int = 0, limit: int = 50) -> dict:
+    """List the videos of a YouTube playlist (any URL with list=...). Flat
+    listing: titles and ids only, nothing downloaded, a few seconds even for
+    hundreds of videos. Returns {playlist_title, total, next_offset, videos:
+    [{video_id, url, title, channel, duration_sec, unavailable}]}. Page with
+    offset/limit (max 200)."""
+    return youtube.playlist_list(url, offset, limit)
+
+
+@tool
+def playlist_triage(url: str, offset: int = 0, limit: int = 50) -> dict:
+    """Sort a playlist's videos against the catalog, a page at a time. Groups:
+    existing (song already in the catalog: song_id, and link = same|alt|
+    different|none vs its karaoke_url), new_version (the song exists but this is
+    an unplugged/remix/piano/reprise version without its own row), maybe (a
+    possible catalog match to confirm), new (not in the catalog), medley,
+    unavailable (private/deleted). Each item has url, title, song_text (the song
+    name parsed from the title), version and duration_sec. Use it before adding
+    songs from a playlist; then catalog_upsert to update links of existing songs
+    and run the add steps for new ones."""
+    return youtube.playlist_triage(url, offset, limit)
+
+
+@tool
 def check_links(limit: int = 50, offset: int = 0) -> dict:
     """Check catalog karaoke_url links (metadata only, catalog not modified).
     Returns {dead: [{song_id, title, url, status: private|removed|unavailable|...}],

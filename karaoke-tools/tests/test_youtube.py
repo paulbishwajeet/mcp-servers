@@ -150,3 +150,91 @@ def test_check_links_reports_dead_not_network_errors(wiki, monkeypatch):
     assert [(d["title"], d["status"]) for d in r["dead"]] == [("B", "private"), ("D", "needs_auth")]
     assert [e["title"] for e in r["errors"]] == ["C"]
     assert catalog.catalog_get("b")["row"]["karaoke_url"]  # catalog untouched
+
+
+def test_repeated_word_query_is_not_a_strong_subset_match():
+    """token_set alone scores "Deewangi Deewangi" 100 against a different song."""
+    s = youtube.title_score("Deewangi Deewangi", "Aisi Deewangi Dekhi Nahin Kahin - Full Karaoke")
+    assert s < youtube.STRONG_INDEX_SCORE
+    assert youtube.title_score("Baharon Phool Barsao",
+                               "Baharon Phool Barsaao Mera Mehboob Aaya Hai - Full Karaoke") > 80
+
+
+# --- playlists ----------------------------------------------------------------------
+
+PL = "https://www.youtube.com/watch?v=uVQvcga6JWc&list=PLMJjuIqd6cqlhxmr1jFnHaOj1hlkEbNeo"
+PL_ENTRIES = [
+    {"id": "aaaaaaaaaa1", "title": "Pal Pal Dil Ke Paas Tum Rehti Ho - Full Karaoke", "duration": 323},
+    {"id": "aaaaaaaaaa2", "title": "Bole Chudiyan Bole Kangna Karaoke With Scrolling Lyrics", "duration": 440},
+    {"id": "aaaaaaaaaa3", "title": "Diwana hua badal - karaoke --Remix...", "duration": 298},
+    {"id": "aaaaaaaaaa4", "title": "Kishore Kumar Medley Karaoke", "duration": 500},
+    {"id": "aaaaaaaaaa5", "title": "[Private video]", "duration": None},
+    {"id": "aaaaaaaaaa6", "title": "Soch Na Sake Karaoke", "duration": 283},
+    {"id": "aaaaaaaaaa6", "title": "Soch Na Sake Karaoke (dup entry)", "duration": 283},
+    {"id": "aaaaaaaaaa7", "title": "Bole Chudiyan Bole Kangna Haye Main Karaoke", "duration": 250},
+    {"id": "aaaaaaaaaa8", "title": "KARAOKE - KHAMOSHIYA || TERI DEEWANI || JANAM JANAM || BHEEGI", "duration": 345},
+]
+
+
+@pytest.fixture
+def playlist(wiki, monkeypatch):
+    import catalog
+    catalog.catalog_upsert({"title": "Pal Pal Dil Ke Paas", "film": "Blackmail", "year": 1973,
+                            "karaoke_url": "https://www.youtube.com/watch?v=aaaaaaaaaa1"})
+    catalog.catalog_upsert({"title": "Bole Chudiyan", "film": "Kabhi Khushi Kabhie Gham", "year": 2001,
+                            "karaoke_url": "https://www.youtube.com/watch?v=zzzzzzzzzzz"})
+    catalog.catalog_upsert({"title": "Deewana Hua Badal", "film": "Kashmir Ki Kali", "year": 1964})
+    seen = {}
+
+    def fake_extract(url, opts, download=False):
+        seen["url"], seen["flat"] = url, opts.get("extract_flat")
+        return {"id": "PLMJjuIqd6cqlhxmr1jFnHaOj1hlkEbNeo", "title": "karaoke", "entries": PL_ENTRIES}
+
+    monkeypatch.setattr(youtube, "_extract", fake_extract)
+    return seen
+
+
+@pytest.mark.parametrize("url,code", [
+    ("https://vimeo.com/playlist?list=PLMJjuIqd6cqlhxmr1jFnHaOj1hlkEbNeo", "domain_not_allowed"),
+    ("https://www.youtube.com/watch?v=uVQvcga6JWc", "invalid_url"),
+    ("https://www.youtube.com/playlist?list=bad id!", "invalid_url"),
+])
+def test_playlist_url_checks(wiki, url, code):
+    assert youtube.playlist_list(url)["error_code"] == code
+    assert youtube.playlist_triage(url)["error_code"] == code
+
+
+def test_playlist_list_flat_and_paged(playlist):
+    r = youtube.playlist_list(PL, limit=3)
+    assert playlist["url"] == "https://www.youtube.com/playlist?list=PLMJjuIqd6cqlhxmr1jFnHaOj1hlkEbNeo"
+    assert playlist["flat"] == "in_playlist"  # never a full per-video extraction
+    assert r["total"] == 8  # duplicate id dropped
+    assert [v["video_id"] for v in r["videos"]] == ["aaaaaaaaaa1", "aaaaaaaaaa2", "aaaaaaaaaa3"]
+    assert r["next_offset"] == 3
+    assert youtube.playlist_list(PL, offset=6)["next_offset"] is None
+    assert youtube.playlist_list(PL, offset=4)["videos"][0]["unavailable"] is True
+
+
+def test_playlist_triage_groups(playlist):
+    r = youtube.playlist_triage(PL)
+    assert r["success"] and r["total"] == 8
+    ex = {i["video_id"]: i for i in r["existing"]}
+    assert ex["aaaaaaaaaa1"]["song_id"] == "pal-pal-dil-ke-paas-1973" and ex["aaaaaaaaaa1"]["link"] == "same"
+    assert ex["aaaaaaaaaa2"]["song_id"] == "bole-chudiyan-2001" and ex["aaaaaaaaaa2"]["link"] == "different"
+    nv = r["new_version"][0]
+    assert nv["video_id"] == "aaaaaaaaaa3" and nv["version"] == "remix" and nv["song_id"] == "deewana-hua-badal-1964"
+    assert [i["video_id"] for i in r["medley"]] == ["aaaaaaaaaa4"]
+    assert [i["video_id"] for i in r["unavailable"]] == ["aaaaaaaaaa5"]
+    new = {i["video_id"]: i for i in r["new"]}
+    assert new["aaaaaaaaaa6"]["song_text"] == "soch na sake"
+    assert "may be a medley" in new["aaaaaaaaaa8"]["note"]
+    assert r["maybe"][0]["video_id"] == "aaaaaaaaaa7"  # short title + many extra words: confirm
+    assert sum(r["counts"].values()) == 8
+
+
+def test_short_catalog_title_does_not_match_everything():
+    assert youtube.match_score("Pal", "pal pal dil ke paas") < youtube.MAYBE_SCORE
+    assert youtube.match_score("Pal Pal Dil Ke Paas", "pal pal dil ke paas tum rehti ho") >= youtube.MATCH_SCORE
+    assert youtube.match_score("Bole Chudiyan", "bole chudiyan bole kangna") >= youtube.MATCH_SCORE
+    assert youtube.match_score("Deewana Hua Badal", "diwana hua badal") >= youtube.MATCH_SCORE
+    assert youtube.MAYBE_SCORE <= youtube.match_score("Tum Hi Ho", "tum hi ho bandhu sakha tum hi") < youtube.MATCH_SCORE

@@ -98,7 +98,7 @@ enforces each one:
 | `catalog.py` | songs.csv / review.csv read-validate-write, lyrics files, events, stats |
 | `vocab.py` | Allowed values and column types, mirrored from SCHEMA.md |
 | `audio.py` | `scan_folder`, `analyze_audio` (librosa) |
-| `youtube.py` | Channel index, karaoke search, info, audio fetch, cleanup, link checks (yt-dlp) |
+| `youtube.py` | Channel index, karaoke search, info, audio fetch, cleanup, link checks, playlists (yt-dlp) |
 | `lyrics.py` | Genius / Ultimate Guitar / Smule extraction and checks |
 | `lookup.py` | Wikipedia soundtrack lookup |
 | `common.py` | Env config, result shape, path and URL checks |
@@ -347,6 +347,63 @@ before anything downloads. Live run: 7.7 MB in 18 s.
 **`cleanup_job(job_id)`** has the same id-format and path checks as media-download.
 It returns `{"success": true}`, or `{"success": true, "note": "already gone"}`.
 
+**`playlist_list(url, offset=0, limit=50)`** lists a playlist's videos (any
+YouTube URL with `list=`). It's a flat listing: ids and titles only, nothing
+downloaded. The 146-video playlist below lists in about 3 s. Page with
+`offset`/`limit` (max 200).
+
+```json
+{"playlist_url": "https://www.youtube.com/playlist?list=PLMJjuIqd6cqlhxmr1jFnHaOj1hlkEbNeo",
+ "playlist_title": "karaoke", "total": 146, "offset": 0, "limit": 50, "next_offset": 50,
+ "videos": [{"video_id": "…", "url": "https://www.youtube.com/watch?v=…",
+             "title": "Kuch Na Kaho Karaoke With Scrolling Lyrics Eng & हिंदी",
+             "channel": "…", "duration_sec": 379, "unavailable": false}]}
+```
+
+**`playlist_triage(url, offset=0, limit=50)`** sorts a page of a playlist
+against the catalog, so the agent gets a short work list instead of raw
+titles. For each video it parses the song name from the title. It takes the
+first segment split on `|`, `||`, ` - `, `:`, `__`, `(` or `[`, then strips
+karaoke noise, version words (unplugged, remix, piano, reprise, key/scale) and
+URLs. It records the version separately, then scores the song name against
+every catalog title:
+
+- 100 for an exact match.
+- 95 when a catalog title of 2+ words starts the song name ("Bole Chudiyan"
+  in "Bole Chudiyan Bole Kangna"). A title of 3 words or fewer followed by
+  3+ more words scores 80 instead ("Tum Hi Ho" vs "Tum Hi Ho Bandhu Sakha…").
+- Otherwise the mean of token-set and token-sort ratio, so spelling variants
+  match ("Diwana Hua Badal" ≈ "Deewana Hua Badal": 91) but a short title like
+  "Pal" doesn't match every video containing the word.
+
+| Group | Meaning |
+|---|---|
+| `existing` | A catalog row of the same version scores ≥ 85. Includes `song_id` and `link`: `same`, `alt` (in `karaoke_alt_urls`), `different` or `none`. |
+| `new_version` | The song is in the catalog but this video is an unplugged/remix/piano/reprise version without its own row |
+| `maybe` | Best score 75–85: the agent should confirm with `catalog_get` |
+| `new` | Not in the catalog |
+| `medley` | Title says medley/mashup/jukebox/non-stop. Titles with 3+ `\|\|` separators stay in their group with a "may be a medley" note. |
+| `unavailable` | Private, deleted or untitled entries |
+
+Live result for the 146-video playlist: 35 existing, 10 new versions, 8 maybe,
+83 new, 10 medleys.
+
+```json
+{"total": 146, "counts": {"existing": 35, "new_version": 10, "maybe": 8, "new": 83, "medley": 10, "unavailable": 0},
+ "existing": [{"video_id": "…", "url": "…", "title": "Soch Na Sake Karaoke", "duration_sec": 283,
+               "song_text": "soch na sake", "version": "", "song_id": "soch-na-sake-2016",
+               "catalog_title": "Soch Na Sake", "score": 100.0, "link": "different"}],
+ "new": [{"video_id": "…", "url": "…", "title": "SAGAR KINARE - KARAOKE || Unplugged | Lower Key | …",
+          "duration_sec": 250, "song_text": "sagar kinare", "version": "unplugged"}], "…": "…"}
+```
+
+Typical use from Telegram ("add the songs in this playlist"):
+1. `playlist_triage` page by page.
+2. For `existing` with `link: different`, `catalog_upsert` the new link, as
+   `karaoke_url` or into `karaoke_alt_urls`.
+3. Run the usual add steps for `new` and `new_version`.
+4. Ask about `maybe` and `medley`.
+
 **`check_links(limit=50, offset=0)`** checks metadata only and never modifies
 the catalog. Network failures and rate limits go in `errors`, not `dead`,
 because they aren't evidence that the link is dead.
@@ -492,7 +549,7 @@ pins.
 venv/bin/python -m pytest
 ```
 
-186 tests, no network: requests and yt-dlp are patched to fail loudly. Each
+195 tests, no network: requests and yt-dlp are patched to fail loudly. Each
 test runs against a fresh temp copy of `tests/fixtures/wiki/`, which is a copy
 of the real `SCHEMA.md` and the empty skeleton. The tests cover:
 
@@ -539,7 +596,7 @@ npx @modelcontextprotocol/inspector \
   venv/bin/python server.py
 ```
 
-Add `--cli --method tools/list` to list the 21 tools in the terminal instead of
+Add `--cli --method tools/list` to list the 23 tools in the terminal instead of
 the browser.
 
 ## Wiring into Hermes

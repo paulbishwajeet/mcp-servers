@@ -144,8 +144,16 @@ def _attempt(source: str, status: str, note: str, url: str = "") -> dict:
 
 
 def _similarity(a: str, b: str) -> float:
+    """Title similarity. Half token_set (word overlap), half plain ratio, so a
+    shared word alone ("Deewangi Deewangi" vs "Deewana") stays below 70."""
     a, b = " ".join(_words(a)), " ".join(_words(b))
-    return fuzz.token_set_ratio(a, b) if a and b else 0.0
+    return 0.5 * fuzz.token_set_ratio(a, b) + 0.5 * fuzz.ratio(a, b) if a and b else 0.0
+
+
+def _bare_title(title: str) -> str:
+    """'Kishore Kumar - Pal Pal Dil Ke Paas (Romanized)' -> 'Pal Pal Dil Ke Paas'."""
+    t = re.sub(r"\(.*?\)|\[.*?\]", " ", title or "")
+    return t.split(" - ", 1)[1] if " - " in t else t
 
 
 # --- Genius ---------------------------------------------------------------------------------
@@ -187,7 +195,7 @@ def rank_genius_hits(hits: list[dict], title: str, singers: str) -> list[tuple[f
     for r in hits:
         name = r.get("title") or ""
         full = r.get("full_title") or name
-        t_sim = max(_similarity(title, name), _similarity(title, full))
+        t_sim = max(_similarity(title, name), _similarity(title, _bare_title(name)))
         if t_sim < MIN_TITLE_SIMILARITY:
             continue
         artist = (r.get("artist_names") or (r.get("primary_artist") or {}).get("name") or "")
@@ -259,6 +267,9 @@ def split_ug_content(content: str) -> tuple[str, str]:
         if "[ch]" in line and not re.sub(r"\[ch\].*?\[/ch\]", "", line).strip(" |-"):
             continue  # chord-only line
         line = re.sub(r"\[ch\].*?\[/ch\]", "", line)
+        line = re.sub(r"\(\s*\)", "", line)  # "([ch]C[/ch])" leaves "()"
+        if not line.strip() and raw.strip():
+            continue
         if _is_chord_line(line):
             continue
         lyric_lines.append(line.rstrip())
@@ -278,7 +289,7 @@ def pick_ug_result(results: list[dict], title: str, singers: str) -> dict | None
     for r in results:
         if (r.get("marketing_type") or "") or not r.get("tab_url"):
             continue
-        sim = _similarity(title, r.get("song_name") or "")
+        sim = _similarity(title, _bare_title(r.get("song_name") or ""))
         if sim < MIN_TITLE_SIMILARITY:
             continue
         a_sim = _similarity(singers, r.get("artist_name") or "") if singers else 50
