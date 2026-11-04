@@ -106,3 +106,18 @@ def test_outcome_scores_match():
                                       (1999, "1990s"), (2024, "2020s")])
 def test_era_for_year(year, era):
     assert vocab.era_for_year(year) == era
+
+
+def test_relation_columns_and_values_match_schema():
+    sec = section("`feedback/relations.csv` columns")
+    m = re.search(r"`(logged_at[^`]*)`", sec)
+    assert [c.strip() for c in m.group(1).split(",")] == vocab.RELATION_COLUMNS
+    verdict = re.search(r"`verdict` is one of (.*?)\.\n", sec).group(1)
+    assert set(re.findall(r"`([^`]+)`", verdict)) == set(vocab.VERDICT)
+    rtype = re.search(r"`request_type` is one of (.*?)\.\n", sec).group(1)
+    assert set(re.findall(r"`([^`]+)`", rtype)) == set(vocab.REQUEST_TYPE)
+
+
+def test_new_files_in_schema_file_table():
+    files = section("Files")
+    assert "`feedback/relations.csv`" in files and "`ranking.yaml`" in files

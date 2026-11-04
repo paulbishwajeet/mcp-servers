@@ -20,7 +20,7 @@ from pathlib import Path
 from rapidfuzz import fuzz, process
 
 import vocab
-from common import PathError, SchemaError, fail, is_youtube_url, ok, resolve_inside, url_host, wiki_root
+from common import PathError, SchemaError, fail, log, is_youtube_url, ok, resolve_inside, url_host, wiki_root
 
 SONGS_REL = "catalog/songs.csv"
 REVIEW_REL = "catalog/review.csv"
@@ -86,6 +86,9 @@ def read_csv(path: Path, columns: list[str]) -> list[dict]:
         raise SchemaError(f"{path.name} not found in the wiki.")
     with path.open(encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
+        if columns == vocab.SONG_COLUMNS and reader.fieldnames == vocab.SONG_COLUMNS_V1:
+            raise SchemaError("songs.csv predates the my_rating/rated_on columns: run "
+                              "`venv/bin/python migrate.py` once (gateway stopped).")
         if reader.fieldnames != columns:
             raise SchemaError(f"{path.name} header does not match SCHEMA.md "
                               f"(expected {len(columns)} columns: {','.join(columns)}).")
@@ -100,6 +103,31 @@ def save_songs(rows: list[dict]) -> None:
     rows = sorted(rows, key=lambda r: r["song_id"])
     atomic_write(wiki_path(SONGS_REL),
                  render_csv(vocab.SONG_COLUMNS, rows, vocab.NUMERIC_COLUMNS))
+
+
+def migrate_songs_csv() -> dict:
+    """One-time, idempotent upgrade of songs.csv to the current header: adds the
+    empty my_rating and rated_on columns after crowd_score. Every other value is
+    kept byte-for-byte (rows are re-rendered with the same quoting rules)."""
+    with _lock:
+        path = wiki_path(SONGS_REL)
+        if not path.exists():
+            raise SchemaError("songs.csv not found in the wiki.")
+        with path.open(encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            header = reader.fieldnames
+            rows = list(reader)
+        if header == vocab.SONG_COLUMNS:
+            return ok(migrated=False, rows=len(rows), note="Already up to date.")
+        if header != vocab.SONG_COLUMNS_V1:
+            raise SchemaError("songs.csv header is neither the old nor the current one; "
+                              "not migrating.")
+        for r in rows:
+            r.setdefault("my_rating", "")
+            r.setdefault("rated_on", "")
+        atomic_write(path, render_csv(vocab.SONG_COLUMNS, rows, vocab.NUMERIC_COLUMNS))
+        append_log("migrate", SONGS_REL, "added my_rating, rated_on columns")
+        return ok(migrated=True, rows=len(rows))
 
 
 def load_review() -> list[dict]:
@@ -386,6 +414,19 @@ def catalog_upsert(row: dict) -> dict:
 
         save_songs(list(by_id.values()))
         append_log(action, new_row["song_id"], details)
+        if action == "add":
+            # A song suggested from outside the catalog (key yt:<video_id>) keeps
+            # its 👍/👎 relations and any pending ⭐ rating once it is added.
+            try:
+                import feedback
+                moved = feedback.on_song_added(new_row)
+                if moved["rekeyed"]:
+                    warnings.append(f"Moved {moved['rekeyed']} feedback keys to {new_row['song_id']}.")
+                if moved["rating"] is not None:
+                    warnings.append(f"Applied pending rating ⭐{moved['rating']}.")
+                    new_row = next(r for r in load_songs() if r["song_id"] == new_row["song_id"])
+            except Exception as e:  # feedback bookkeeping must not fail the add
+                log(f"[catalog_upsert] feedback hook failed: {e!r}")
         return ok(action=action, song_id=new_row["song_id"], changed=changed, row=new_row,
                   warnings=warnings)
 

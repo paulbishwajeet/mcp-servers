@@ -24,8 +24,11 @@ PAGE_HOSTS = {"genius.com", "www.genius.com", "smule.com", "www.smule.com",
               "hindigeetmala.net", "www.hindigeetmala.net", "geetmanjusha.com",
               "www.geetmanjusha.com", "lyricsindia.net", "www.lyricsindia.net",
               "musixmatch.com", "www.musixmatch.com"}
-# SCHEMA.md's lyrics_source values; sites without their own value are "other-web".
-SCHEMA_SOURCE = {"genius": "genius", "ultimate-guitar": "ultimate-guitar", "smule": "smule"}
+# SCHEMA.md's lyrics_source value for each source; sites without their own value
+# would be "other-web".
+SCHEMA_SOURCE = {"genius": "genius", "ultimate-guitar": "ultimate-guitar", "smule": "smule",
+                 "musixmatch": "musixmatch", "geetmanjusha": "geetmanjusha",
+                 "hindigeetmala": "hindigeetmala", "lyricsindia": "lyricsindia"}
 # Search endpoints the tool itself calls. Not accepted from callers.
 SEARCH_HOSTS = {"api.genius.com", "www.ultimate-guitar.com"}
 

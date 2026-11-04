@@ -10,6 +10,7 @@ numpy
 requests
 beautifulsoup4
 rapidfuzz
+pyyaml
 
 # --- Intel Mac (macOS x86_64) pins ---------------------------------------------
 # numba 0.63+ and llvmlite 0.46+ publish no macOS x86_64 wheels, so pip would try

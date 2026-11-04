@@ -10,11 +10,19 @@ SONG_COLUMNS = [
     "duration_sec", "genre", "mood", "emotion", "theme", "situation", "singalong",
     "karaoke_url", "karaoke_alt_urls", "karaoke_channel", "lyrics_file",
     "lyrics_source", "lyrics_url", "added_from", "added_on", "status",
-    "my_key_change", "notes", "times_performed", "crowd_score", "last_performed",
-    "confidence", "needs_review",
+    "my_key_change", "notes", "times_performed", "crowd_score", "my_rating", "rated_on",
+    "last_performed", "confidence", "needs_review",
 ]
+# songs.csv header before my_rating/rated_on were added (catalog.migrate_songs_csv
+# upgrades it).
+SONG_COLUMNS_V1 = [c for c in SONG_COLUMNS if c not in ("my_rating", "rated_on")]
 
 REVIEW_COLUMNS = ["logged_at", "song_id", "source_ref", "problem", "details", "resolved"]
+
+RELATION_COLUMNS = ["logged_at", "reference_key", "reference_title", "song_key", "song_title",
+                    "verdict", "request_type", "request_text"]
+VERDICT = ["up", "down"]
+REQUEST_TYPE = ["like", "after", "next", "plan"]
 
 INDEX_COLUMNS = ["video_id", "title", "url", "duration_sec", "indexed_on"]
 
@@ -24,7 +32,8 @@ LANGUAGE = ["hindi", "urdu", "punjabi", "bengali", "english", "mixed"]
 VOICE_TYPE = ["solo-male", "solo-female", "duet-mf", "duet-mm", "duet-ff", "group"]
 ERA = ["pre-1960", "1960s", "1970s", "1980s", "1990s", "2000s", "2010s", "2020s"]
 TEMPO_CLASS = ["slow", "medium", "fast"]
-LYRICS_SOURCE = ["genius", "smule", "ultimate-guitar", "other-web", "neel", "transliterated"]
+LYRICS_SOURCE = ["genius", "smule", "ultimate-guitar", "musixmatch", "geetmanjusha",
+                 "hindigeetmala", "lyricsindia", "other-web", "neel", "transliterated"]
 ADDED_FROM = ["local-mp3", "youtube-link", "song-name"]
 STATUS = ["ready", "practicing", "wishlist", "retired"]
 CONFIDENCE = ["high", "medium", "low"]
@@ -94,9 +103,10 @@ INT_FIELDS = {  # column -> (min, max); None = unbounded
     "singalong": (1, 5),
     "my_key_change": (-12, 12),
     "times_performed": (0, None),
+    "my_rating": (1, 10),
 }
 NUMBER_FIELDS = {"bpm": (20.0, 320.0), "crowd_score": (1.0, 3.0)}
-DATE_FIELDS = ["added_on", "last_performed"]
+DATE_FIELDS = ["added_on", "last_performed", "rated_on"]
 BOOL_FIELDS = ["needs_review"]
 URL_FIELDS = ["karaoke_url", "lyrics_url"]
 # Written unquoted in the CSV; every other field is double-quoted.

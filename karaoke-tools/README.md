@@ -35,6 +35,8 @@ files only: CSV, text and Markdown, with no database and no audio.
 | `events/<YYYY-MM-DD>-<slug>.md` | One file per show, from `events/_TEMPLATE.md` |
 | `index/anilchauhan.csv` | Cached video list of the Anil Chauhan Karaoke channel |
 | `log.md` | Append-only change log |
+| `feedback/relations.csv` | 👍/👎 feedback on suggestion pairs (append-only) |
+| `ranking.yaml` | Weights for `suggest` (git-tracked, tune freely) |
 | `README.md` | Overview, with a "Quick stats" block that `catalog_stats` keeps current |
 
 What Neel uses it for:
@@ -102,6 +104,10 @@ enforces each one:
 | `youtube.py` | Channel index, karaoke search, info, audio fetch, cleanup, link checks, playlists, mixes (yt-dlp) |
 | `lyrics.py` | Genius, Ultimate Guitar, hindigeetmala, geetmanjusha, lyricsindia, musixmatch, Smule extraction and checks |
 | `lookup.py` | Wikipedia soundtrack lookup |
+| `suggest.py` | `suggest`, `suggest_more`: candidates, ranking.yaml scoring, numbering |
+| `feedback.py` | Relations, ratings, button keyboards, `feedback_tap`, session state |
+| `tg.py` | Telegram Bot API `sendMessage` only (to `TELEGRAM_CHAT_ID`) |
+| `migrate.py` | One-time songs.csv upgrade (adds `my_rating`, `rated_on`) |
 | `common.py` | Env config, result shape, path and URL checks |
 | `try_tool.py` | CLI: run any tool outside MCP |
 
@@ -541,8 +547,8 @@ Dil Ke Paas, Tum Rahti Ho" beats "Pal Pal Dil Ke"; "version" results are
 penalised. Up to 3 pages per source are tried.
 
 Each candidate has a `schema_source`: the SCHEMA.md `lyrics_source` value to
-save it with. That's `genius`, `ultimate-guitar` or `smule`, and `other-web`
-for the other sites. Each attempt has a `status`: `ok`, `blocked` (bot
+save it with. Every source here has its own value (`genius`, `ultimate-guitar`,
+`hindigeetmala`, `geetmanjusha`, `lyricsindia`, `musixmatch`, `smule`). Each attempt has a `status`: `ok`, `blocked` (bot
 challenge), `needs_js`, `no_match`, `not_found`, `network_error` or `error`.
 
 Live result:
@@ -594,6 +600,156 @@ edit links are removed. Live result:
 
 `{"found": false}` means no film article matched.
 
+### Suggestions and feedback
+
+"Songs like X", "what after X", "next peppy old" and plan suggestions are ranked
+by a deterministic tool, `suggest`, not by the agent: Haiku is unreliable at
+arithmetic over 40 candidates. The weights live in the wiki's **`ranking.yaml`**
+(git-tracked, re-read on every call). Neel's taps on Telegram buttons feed back
+into the ranking:
+
+- **👍 / 👎 = relation feedback:** "does song Y fit after reference X?" It's
+  about the pair, never about Y alone. Next time X is the reference, Y moves
+  up or down. For a request with no reference song (`next peppy old`), the
+  normalised request is the reference (`query:old peppy`).
+- **⭐ 1–10 = song rating:** `my_rating` on the song, used in all ranking.
+
+**`suggest(mode, reference="", url="", references=[], query="", limit_catalog=10, limit_outside=10, exclude=[], send_buttons=true)`**
+
+| `mode` | What | Lists |
+|---|---|---|
+| `like` | songs like `reference` | `limit_catalog` catalog + `limit_outside` outside |
+| `after` | what to sing after `reference` (quick) | 5 catalog + 3 outside |
+| `next` | `query` words like `peppy old`: catalog only, no YouTube | 3 catalog |
+| `plan` | several `references` (a set being planned) | as `like` |
+
+1. **Resolve the reference.** A `song_id` or a title (fuzzy, ≥ 90), or a
+   YouTube `url`. A catalog reference with a `karaoke_url` seeds the mix from
+   that video.
+2. **Collect candidates.** `youtube_mix(source="both", limit=40)` per
+   reference (not for `next`): its `in_catalog` matches become catalog
+   candidates, the rest outside candidates (jukebox and "other" skipped).
+   Catalog songs with the same mood and era as a reference are added as fill.
+   For `next`, every catalog song that fits all the query words is a
+   candidate:
+   - era words: old, classic, retro, new, latest, 70s…
+   - tempo: slow, medium, fast
+   - voice: duet, female…
+   - SCHEMA mood/genre/theme/situation values
+3. **Score** with `ranking.yaml` (below).
+4. **Drop:** `exclude` (song_ids or titles: tonight's list, the set), the
+   references themselves, jukeboxes, retired songs, and in plans songs rated ≤
+   `exclude_rating_at_or_below_in_plans`. `max_per_singer` caps catalog songs
+   per singer.
+5. **Number continuously** across groups and pages: catalog first, then
+   outside, 1..N. `suggest_more` continues the sequence. For outside items on
+   the page, the karaoke link comes from the mix when it has a karaoke video,
+   otherwise from `karaoke_find`, otherwise `no karaoke track found`.
+6. **Save** the ranked list and the number→song map to
+   `STATE_ROOT/last_suggestions.json` (last 5 requests), then **send the
+   buttons**. If YouTube fails, catalog results still come back with
+   `warning: "YouTube Mix unavailable"`.
+
+```json
+{"request_id": "20261104-213012-1a2b3c", "mode": "like", "reference_key": "pal-pal-dil-ke-paas-1973",
+ "reference_title": "Pal Pal Dil Ke Paas",
+ "items": [
+  {"n": 1, "group": "catalog", "song_key": "o-mere-dil-ke-chain-1972", "title": "O Mere Dil Ke Chain",
+   "film": "Mere Jeevan Saathi", "year": "1972", "singers": "Kishore Kumar", "tempo_class": "slow",
+   "energy": "2", "status": "ready", "my_rating": "9", "my_key_change": "-2",
+   "karaoke_url": "https://www.youtube.com/watch?v=…", "score": 13,
+   "reasons": "mix #6 · ready · crowd 2.6 · ⭐9"},
+  {"n": 11, "group": "outside", "song_key": "yt:…", "title": "Chalte Chalte", "karaoke_url": "https://…",
+   "video_url": "https://…", "score": 5, "reasons": "mix #3 · both · outside"}],
+ "remaining": {"catalog": 12, "outside": 21}, "buttons_sent": true, "warnings": []}
+```
+
+**`ranking.yaml`** (defaults; anything missing falls back to these):
+
+| Key | Default | Points |
+|---|---|---|
+| `mix_position` | `{top5: 3, top15: 2, top40: 1}` | by best rank in the reference's YouTube Mix |
+| `both_sources` | `2` | in both the YouTube Mix and the YouTube Music radio |
+| `multiple_mixes_per_extra` | `2` | plans: per extra reference mix the song appears in |
+| `status` | `{ready: 3, practicing: 2, wishlist: 1, outside: 0}` | catalog status |
+| `crowd_score` | `{gte_2_5: 2, gte_2_0: 1}` | event crowd score |
+| `same_era` | `1` | same era as a reference (or a query era word) |
+| `tempo_or_energy_within_1` | `1` | same tempo_class, or energy within 1 |
+| `same_mood` | `1` | a mood in common |
+| `relation` | `{per_up: 2, per_down: -2, cap: 6, half_life_days: 180}` | Σ per_up/per_down × 0.5^(age_days / half_life_days) over `relations.csv` rows for (reference, song), capped at ±cap |
+| `rating` | `{"9-10": 3, "7-8": 2, "5-6": 0, "3-4": -1, "1-2": -3}` | by `my_rating` |
+| `max_per_singer` | `3` | catalog songs per singer per list (0 = no cap) |
+| `exclude_rating_at_or_below_in_plans` | `2` | plans drop songs rated this low |
+
+`reasons` names the parts that applied, for example `mix #2 · both · ready ·
+⭐9 · 👍×2 after this`.
+
+**`suggest_more()`** returns the next page of the last list (numbers continue,
+e.g. 21–40). It makes no new YouTube calls and also sends buttons.
+
+**Buttons.** Telegram reply keyboards: they replace the phone keyboard, and a
+tap sends the button's text as a normal message, which Hermes delivers to the
+agent. Inline buttons were ruled out after reading Hermes's Telegram adapter:
+its `callback_query` handler acts only on its own prefixes and silently drops
+any other `callback_data`, so taps would never reach the agent
+(`BUTTON_MODE=inline` is refused). Hermes never sends `ReplyKeyboardRemove`
+itself, so the keyboard stays until `done`.
+
+- Main keyboard: one row per item `["3 👍", "3 👎", "3 ⭐"]`, then
+  `["more", "done"]`, with `resize_keyboard` and the placeholder "tap or type".
+  Text: `Rate these: 👍 fits · 👎 doesn't fit · ⭐ rate song`.
+- Rating pad (after `3 ⭐`): `["3 ⭐1" … "3 ⭐5"]`, `["3 ⭐6" … "3 ⭐10"]`,
+  `["back"]`.
+- A chat shows one reply keyboard at a time (a newer one replaces it), so a
+  page stays in **one** keyboard. A 20-item page is 62 buttons. It's only
+  split, into messages saying which numbers they cover, past Telegram's
+  ~100-button limit (more than 32 items).
+- Sent with the Bot API `sendMessage` to `TELEGRAM_CHAT_ID` only; any other
+  chat id is refused. The server never calls `getUpdates` or sets a webhook,
+  which would take the gateway's updates.
+
+**`send_buttons(request_id="")`** re-sends the keyboard for a list (default:
+the last one).
+
+**`feedback_tap(text)`** parses a tapped or typed feedback message and acts on
+it. It returns `{handled, reply}`; `reply` is the one short line for the agent
+to send. Numbers refer to the **most recent** list. Emoji variants parse
+(skin tones, with or without variation selectors, `★`).
+
+| Text | Action |
+|---|---|
+| `3 👍` / `3 👎` | Appends to `relations.csv` for (that list's reference, song #3). Reply: `👍 noted: Yeh Shaam Mastani after Pal Pal Dil Ke Paas`. Tapping the same item again in the same list replaces the first tap. In a plan, the row is written once per reference song. |
+| `3 ⭐` | Sends the rating pad: `Rate Yeh Shaam Mastani:` |
+| `3 ⭐9`, `rate 3 9` | `my_rating=9`, `rated_on=today` via `catalog_upsert`, then the main keyboard again. For an outside song, nothing is written: `needs_add: true` with its title/url, and the rating is kept pending in state. |
+| `rate <song> 9` | `set_rating` by title |
+| `back` | the main keyboard again |
+| `done` | removes the keyboard (`👍 thanks`) |
+| `more` | `suggest_more()` |
+| `fb 1👍 3👎 5⭐8` | each item in order; one combined reply |
+
+Unknown numbers reply `#12 isn't in the last list`. Text that isn't feedback
+returns `handled: false`.
+
+**`set_rating(ref, rating)`** sets a song's rating by song_id or title.
+
+**`relations_rekey(old_key, new_key)`** rewrites a key in `relations.csv`,
+e.g. `yt:<id>` → `song_id`. **`catalog_upsert` does this automatically**: when
+a newly added song's `karaoke_url` or alt URLs contain a video that was
+suggested from outside, its relations move to the new `song_id` and any
+pending ⭐ rating is applied.
+
+**`relations_for(ref)`** lists a song's strongest relations both ways:
+`goes_after_it` and `it_goes_after`.
+
+**Data.** `feedback/relations.csv` (append-only, columns in SCHEMA.md),
+`my_rating`/`rated_on` on `songs.csv`, and `ranking.yaml`, all in the wiki.
+Session state lives in `STATE_ROOT`, outside the repo.
+
+**Upgrading an existing wiki:** stop the gateway, then run
+`WIKI_ROOT=… venv/bin/python migrate.py` once. It adds the empty `my_rating`
+and `rated_on` columns and changes nothing else; running it again does
+nothing. Until then, catalog tools return `schema_mismatch` with this hint.
+
 ## Environment variables
 
 See `.env.example`. Hermes sets these in the `env:` block of `config.yaml`;
@@ -611,6 +767,10 @@ the server does not read a `.env` file.
 | `GENIUS_ACCESS_TOKEN` | unset | Optional free Genius API client token |
 | `LYRICS_EXTRA_DOMAINS` | empty | Extra allowed lyrics domains, comma-separated |
 | `LYRICS_DELAY_SEC` | `2` | Delay between lyrics requests |
+| `TELEGRAM_BOT_TOKEN` | unset | The KaraokeGayak bot token (same bot as the gateway); sendMessage only. Pass `"${TELEGRAM_BOT_TOKEN}"` in config.yaml. |
+| `TELEGRAM_CHAT_ID` | unset | The only allowed destination: Neel's Telegram user id (DM chat id). `"${TELEGRAM_HOME_CHANNEL}"` in this profile. |
+| `BUTTON_MODE` | `reply` | `reply` keyboard; `inline` is refused (Hermes drops unknown inline taps) |
+| `STATE_ROOT` | `~/.hermes/profiles/karaoke-gayak/state` | Session state (last suggestion lists, pending ratings) |
 
 ## Install (Intel Mac)
 
@@ -647,8 +807,8 @@ resolves to 63 packages, all wheels, with nothing built from source.
 
 Unpinned: `mcp` (2.3.0), `yt-dlp[default]` (2026.10.26 + yt-dlp-ejs 0.8.0),
 `librosa` (1.0.0), `soundfile` (0.14.0, bundles libsndfile 1.2.2), `mutagen`,
-`requests`, `beautifulsoup4`, `rapidfuzz`. On Apple Silicon you can drop the
-pins.
+`requests`, `beautifulsoup4`, `rapidfuzz`, `pyyaml` (6.0.3, Intel wheel). On
+Apple Silicon you can drop the pins.
 
 ## Testing
 
@@ -658,7 +818,7 @@ pins.
 venv/bin/python -m pytest
 ```
 
-231 tests, no network: requests and yt-dlp are patched to fail loudly. Each
+285 tests, no network: requests and yt-dlp are patched to fail loudly. Each
 test runs against a fresh temp copy of `tests/fixtures/wiki/`, which is a copy
 of the real `SCHEMA.md` and the empty skeleton. The tests cover:
 
@@ -705,7 +865,7 @@ npx @modelcontextprotocol/inspector \
   venv/bin/python server.py
 ```
 
-Add `--cli --method tools/list` to list the 24 tools in the terminal instead of
+Add `--cli --method tools/list` to list the 31 tools in the terminal instead of
 the browser.
 
 ## Wiring into Hermes
@@ -727,6 +887,12 @@ mcp_servers:
       YTDLP_JS_RUNTIME: "node:/Users/bishpaul/.local/bin/node"
       LYRICS_DELAY_SEC: "2"
       # GENIUS_ACCESS_TOKEN: "..."
+      # Placeholders, not values: Hermes fills them in from the profile's .env
+      # when it starts the server, so the token never appears in config.yaml.
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN}"
+      TELEGRAM_CHAT_ID: "${TELEGRAM_HOME_CHANNEL}"
+      BUTTON_MODE: "reply"
+      STATE_ROOT: "/Users/bishpaul/.hermes/profiles/karaoke-gayak/state"
 ```
 
 Use the venv's own `python` and absolute paths everywhere. Hermes runs under

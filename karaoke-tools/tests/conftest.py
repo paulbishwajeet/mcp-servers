@@ -28,6 +28,10 @@ def wiki(tmp_path, monkeypatch):
     monkeypatch.setenv("LYRICS_DELAY_SEC", "0")
     monkeypatch.delenv("LYRICS_EXTRA_DOMAINS", raising=False)
     monkeypatch.delenv("GENIUS_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("STATE_ROOT", str(tmp_path / "state"))
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:TEST-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "4242")
+    monkeypatch.setenv("BUTTON_MODE", "reply")
     return root.resolve()
 
 
@@ -41,9 +45,41 @@ def no_network(monkeypatch):
         raise AssertionError("network access attempted")
 
     monkeypatch.setattr(requests, "get", boom)
+    monkeypatch.setattr(requests, "post", boom)
     monkeypatch.setattr(requests.Session, "request", boom)
     monkeypatch.setattr(yt_dlp, "YoutubeDL", boom)
 
 
 def fixture_text(name: str) -> str:
     return (FIXTURES / name).read_text(encoding="utf-8")
+
+
+class FakeTelegram:
+    """Records Bot API calls instead of sending them."""
+
+    def __init__(self):
+        self.calls = []
+
+    def post(self, url, json=None, timeout=None):
+        method = url.rsplit("/", 1)[-1]
+        self.calls.append((method, json))
+
+        class R:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {"ok": True, "result": {"message_id": len(self.calls)}}
+        return R()
+
+    @property
+    def messages(self):
+        return [p for m, p in self.calls if m == "sendMessage"]
+
+
+@pytest.fixture
+def telegram(monkeypatch):
+    import tg
+    fake = FakeTelegram()
+    monkeypatch.setattr(tg.requests, "post", fake.post)
+    return fake

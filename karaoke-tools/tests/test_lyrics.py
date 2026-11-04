@@ -208,7 +208,7 @@ def test_hindigeetmala_extract_and_search_ranking(wiki, monkeypatch):
     monkeypatch.setattr(lyrics, "fetch", fake_fetch)
     r = lyrics.try_hindigeetmala("Pal Pal Dil Ke Paas", "Blackmail", "Kishore Kumar")
     assert calls[1] == "https://www.hindigeetmala.net/song/pal_pal_dil_ke_paas.htm"  # not the Palak version
-    assert r[-1]["passes"] and r[-1]["schema_source"] == "other-web"
+    assert r[-1]["passes"] and r[-1]["schema_source"] == "hindigeetmala"
 
 
 def test_geetmanjusha_takes_roman_block():

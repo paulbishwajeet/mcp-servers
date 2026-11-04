@@ -12,6 +12,8 @@ This file defines the data format. Any agent or tool that reads or writes this r
 | `events/<YYYY-MM-DD>-<slug>.md` | One file per show, from `events/_TEMPLATE.md`. |
 | `index/anilchauhan.csv` | Cached video list of the Anil Chauhan Karaoke channel: `video_id,title,url,duration_sec,indexed_on`. |
 | `log.md` | Append-only change log. |
+| `feedback/relations.csv` | Append-only 👍/👎 feedback on suggestion pairs: does song Y fit after/with reference X. |
+| `ranking.yaml` | Weights the `suggest` tool ranks with. Git-tracked; tune freely. |
 
 ## CSV format rules
 
@@ -50,7 +52,7 @@ This file defines the data format. Any agent or tool that reads or writes this r
 | karaoke_alt_urls | multi | Up to 2 backup links |
 | karaoke_channel | text | Channel of `karaoke_url` |
 | lyrics_file | path | `lyrics/<song_id>.txt`, empty if missing |
-| lyrics_source | enum | `genius`, `smule`, `ultimate-guitar`, `other-web`, `neel`, `transliterated` |
+| lyrics_source | enum | `genius`, `smule`, `ultimate-guitar`, `musixmatch`, `geetmanjusha`, `hindigeetmala`, `lyricsindia`, `other-web`, `neel`, `transliterated` |
 | lyrics_url | url | Page the lyrics came from |
 | added_from | enum | `local-mp3`, `youtube-link`, `song-name` |
 | added_on | date | YYYY-MM-DD |
@@ -59,6 +61,8 @@ This file defines the data format. Any agent or tool that reads or writes this r
 | notes | text | Neel's performance notes |
 | times_performed | int | From events |
 | crowd_score | number | Average outcome across events: standout = 3, good = 2, weak = 1 |
+| my_rating | int 1-10 | Neel's personal rating of the song, 10 = absolute favourite. Empty = unrated. |
+| rated_on | date | When my_rating was last set |
 | last_performed | date | From events |
 | confidence | enum | `high`, `medium`, `low`: confidence in the song identification and metadata |
 | needs_review | bool | `true` if anything in the row is uncertain; a matching row exists in review.csv |
@@ -69,6 +73,16 @@ This file defines the data format. Any agent or tool that reads or writes this r
 - `problem` is one of `unsure-match`, `no-lyrics`, `lyrics-mismatch`, `no-karaoke-link`, `dead-link`, `analysis-failed`, `metadata-conflict`.
 - `source_ref` is the mp3 path, YouTube URL or song name that started it.
 - `resolved` is `false` until fixed, then `true` (rows are not deleted).
+
+## `feedback/relations.csv` columns
+
+`logged_at, reference_key, reference_title, song_key, song_title, verdict, request_type, request_text`
+- One row per 👍/👎 tap on a suggestion: is `song_key` a good pick after/with `reference_key`? It is about the pair, never about the song alone.
+- `verdict` is one of `up`, `down`.
+- `request_type` is one of `like`, `after`, `next`, `plan`.
+- Keys: a catalog `song_id`; `yt:<video_id>` for a song outside the catalog (rewritten to its `song_id` when the song is added); `query:<words>` for a request with no reference song (lowercase words, sorted, stopwords removed, e.g. `query:old peppy`).
+- Append-only, except that a second tap on the same pair within the same request replaces the first.
+- Session state (which number maps to which song in the last suggestion list) lives outside this repo, in the karaoke-tools `STATE_ROOT`.
 
 ## Lyrics files
 

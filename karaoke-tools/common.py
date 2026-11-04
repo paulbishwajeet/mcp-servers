@@ -16,6 +16,8 @@ from urllib.parse import urlparse
 DEFAULT_WIKI_ROOT = "~/.hermes/profiles/karaoke-gayak/karaoke-gayak-wiki"
 DEFAULT_MEDIA_ROOT = "~/.hermes/profiles/karaoke-gayak/media-tmp"
 DEFAULT_CHANNEL_URL = "https://www.youtube.com/@AnilChauhankaraoke"
+DEFAULT_STATE_ROOT = "~/.hermes/profiles/karaoke-gayak/state"
+BUTTON_MODES = ("reply", "inline")
 
 YOUTUBE_HOSTS = frozenset({"youtube.com", "www.youtube.com", "m.youtube.com",
                            "music.youtube.com", "youtu.be"})
@@ -86,6 +88,25 @@ def genius_token() -> str:
 def lyrics_extra_domains() -> list[str]:
     raw = os.environ.get("LYRICS_EXTRA_DOMAINS", "")
     return [d.strip().lower().rstrip(".") for d in raw.split(",") if d.strip()]
+
+
+def state_root() -> Path:
+    """Session state (last suggestion lists) lives outside the wiki repo."""
+    return _path_env("STATE_ROOT", DEFAULT_STATE_ROOT)
+
+
+def telegram_token() -> str:
+    return os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+
+
+def telegram_chat_id() -> str:
+    """The only chat the server may send to (Neel's DM)."""
+    return os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+
+
+def button_mode() -> str:
+    mode = os.environ.get("BUTTON_MODE", "reply").strip().lower()
+    return mode if mode in BUTTON_MODES else "reply"
 
 
 def lyrics_delay_sec() -> float:
