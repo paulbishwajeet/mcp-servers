@@ -391,3 +391,17 @@ def test_relations_rekey_and_for(listed, wiki, songs):
     assert back["it_goes_after"][0]["song_key"] == songs["ref"]
     r = feedback.relations_rekey(songs["ref"], "new-key")
     assert r["rewritten"] == 2 and {x["reference_key"] for x in rel_rows(wiki)} == {"new-key"}
+
+
+def test_reference_tie_prefers_the_plain_better_row(songs, mix, telegram):
+    add(title="Pal Pal Dil Ke Paas", year=1977, singers="Kishore Kumar", status="wishlist",
+        karaoke_url="https://www.youtube.com/watch?v=6UGHmWVy1ss")  # a duplicate added later
+    add(title="Pal Pal Dil Ke Paas (Unplugged)", film="Blackmail", year=1973, status="ready")
+    r = suggest.suggest(mode="like", reference="Pal Pal Dil Ke Paas", send_buttons=False)
+    assert r["reference_key"] == songs["ref"]  # ready, has a film, not a version row
+
+
+def test_retired_mix_matches_are_dropped(mix, songs, telegram):
+    catalog.catalog_upsert({"song_id": songs["shaam"], "status": "retired"})
+    r = suggest.suggest(mode="like", reference="Pal Pal Dil Ke Paas", send_buttons=False)
+    assert "Yeh Shaam Mastani" not in [i["title"] for i in r["items"]]

@@ -124,9 +124,20 @@ def _resolve(ref: str) -> dict:
     g = catalog.catalog_get(ref)
     if g.get("found"):
         return {"key": g["row"]["song_id"], "title": g["row"]["title"], "row": g["row"]}
-    best = (g.get("matches") or [None])[0]
-    if best and best["score"] >= 90:
-        row = catalog.catalog_get(best["song_id"])["row"]
+    matches = [m for m in g.get("matches") or [] if m["score"] >= 90]
+    if matches:
+        # Several rows can match equally (a duplicate, an unplugged version):
+        # prefer the plain version, better status, then a row with film + link.
+        # catalog_get scores title + film, so a duplicate without a film can
+        # outscore the real row: group rows whose title equals the reference.
+        same = [m for m in matches if _norm(m["title"]) == _norm(ref)]
+        top = max(m["score"] for m in matches)
+        rows = [catalog.catalog_get(m["song_id"])["row"]
+                for m in (same or [m for m in matches if m["score"] == top])]
+        status_rank = {"ready": 0, "practicing": 1, "wishlist": 2}
+        row = min(rows, key=lambda r: (bool(youtube._row_version(r["title"])),
+                                       status_rank.get(r["status"], 3), not r["film"],
+                                       not r["karaoke_url"], r["song_id"]))
         return {"key": row["song_id"], "title": row["title"], "row": row}
     return {"key": "", "title": ref, "row": None}
 
@@ -316,7 +327,7 @@ def rank(mode: str, refs: list[dict], urls: list[str], query: str, exclude: list
     out = {"catalog": [], "outside": []}
     for key, c in cands.items():
         row = by_id.get(key) if c["group"] == "catalog" else None
-        if c["group"] == "catalog" and row is None:
+        if c["group"] == "catalog" and (row is None or row["status"] == "retired"):
             continue
         title = row["title"] if row else c["title"]
         if key in excl_keys or key in ref_keys or _norm(title) in excl_titles:

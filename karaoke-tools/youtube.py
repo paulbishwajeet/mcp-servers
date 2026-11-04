@@ -651,7 +651,10 @@ SAME_SONG_SCORE = 90
 
 # Noise in Indian label/lyric-channel titles: removed from song and film parts.
 _TITLE_NOISE = re.compile(
-    r"\b(full\s+(?:video|song|audio|version|hd\s+video)|official\s+(?:music\s+)?(?:video|audio|"
+    r"\b(with\s+(?:scrolling\s+)?lyrics?|with\s+(?:[a-z]+\s+){0,2}vocals?|"
+    r"(?:guide|singer|female|male)\s+vocals?|sing\s+along|(?:lower|higher|low|high)\s+(?:key|scale|pitch|version)|"
+    r"lower|higher|scale|"
+    r"full\s+(?:video|song|audio|version|hd\s+video)|official\s+(?:music\s+)?(?:video|audio|"
     r"lyric(?:al)?\s+video)|lyrical(?:\s+video)?|lyrics?(?:\s+video)?|with\s+lyrics|"
     r"scrolling\s+lyrics|music\s+video|video\s+song|audio\s+song|full\s+lyrics|"
     r"karaoke(?:\s+(?:track|version|song))?|hd|4k|8k|1080p|720p|remastered|"
@@ -784,7 +787,8 @@ def parse_song_title(video_title: str, names: set[str] | None = None,
                 film = b
     if not film:  # any later segment that is a known film
         film = next((parts[i][0] for i in content[1:] if is_film(parts[i][0])), "")
-    if song.isupper():
+    song = re.sub(r"\s*\.{2,}\s*$", "", song)  # "Chura Liya Hai Tumne Jo..."
+    if song.isupper() or song.islower():
         song = song.title()
     if film.isupper():
         film = film.title()

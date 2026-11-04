@@ -262,6 +262,11 @@ FILMS = {"blackmail", "silsila", "humpty sharma ki dulhania", "chhichhore", "san
     ('Tum Hi Ho (From "Aashiqui 2")', "Tum Hi Ho", "Aashiqui 2"),
     ("Meri Bheegi Bheegi Si ❤ Anamika | Kishore Kumar", "Meri Bheegi Bheegi Si", "Anamika"),
     ("Chhookar Mere Man Ko- - & Kishore Kumar | Karaoke", "Chhookar Mere Man Ko", ""),
+    ("Gulabi Aankhen Karaoke With Scrolling Lyrics", "Gulabi Aankhen", ""),
+    ("Gulabi Aankhen - Karaoke with scrolling Lyric | Mohammed Rafi Karaoke | Hindi Sing Along", "Gulabi Aankhen", ""),
+    ("Main Duniya Bhula Dunga with FEMALE SINGER VOCAL| Hindi English Lyrics| TuneStar Karaoke", "Main Duniya Bhula Dunga", ""),
+    ("chura liya hai tumne jo... lower scale karaoke", "Chura Liya Hai Tumne Jo", ""),
+    ("Pyar Deewana Hota Hai Karaoke with Lyrics | Kati Patang", "Pyar Deewana Hota Hai", ""),
     ("Full Video: Kesariya | Brahmastra | Ranbir Kapoor, Alia Bhatt | Pritam | Arijit Singh", "Kesariya", "Brahmastra"),
 ])
 def test_parse_song_title(title, song, film):
