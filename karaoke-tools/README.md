@@ -99,7 +99,7 @@ enforces each one:
 | `catalog.py` | songs.csv / review.csv read-validate-write, lyrics files, events, stats |
 | `vocab.py` | Allowed values and column types, mirrored from SCHEMA.md |
 | `audio.py` | `scan_folder`, `analyze_audio` (librosa) |
-| `youtube.py` | Channel index, karaoke search, info, audio fetch, cleanup, link checks, playlists (yt-dlp) |
+| `youtube.py` | Channel index, karaoke search, info, audio fetch, cleanup, link checks, playlists, mixes (yt-dlp) |
 | `lyrics.py` | Genius, Ultimate Guitar, hindigeetmala, geetmanjusha, lyricsindia, musixmatch, Smule extraction and checks |
 | `lookup.py` | Wikipedia soundtrack lookup |
 | `common.py` | Env config, result shape, path and URL checks |
@@ -405,6 +405,101 @@ Typical use from Telegram ("add the songs in this playlist"):
 3. Run the usual add steps for `new` and `new_version`.
 4. Ask about `maybe` and `medley`.
 
+**`youtube_mix(song="", url="", seed="karaoke", source="youtube", limit=25)`**
+shows what YouTube considers similar songs. The related-videos API is gone,
+but every video has an auto-generated Mix playlist (`list=RD<id>`), and
+YouTube Music has a song radio (`list=RDAMVM<id>` on `music.youtube.com`).
+yt-dlp flat-lists both without a login. Mixes are endless, so the listing is
+capped at `playlistend = limit + 5`; it takes about 1 s per source. Nothing is
+downloaded and nothing is written.
+
+1. **Seed.**
+   - With `url`, the video in that allowlisted YouTube URL.
+   - Otherwise, with `seed="karaoke"` (the default), a
+     `ytsearch5:"<song> karaoke"` search. It takes the karaoke video closest
+     to the song name: closeness first, then the Anil Chauhan channel, then
+     the fewest extra words. Other songs, and unplugged/remix/female/cover
+     versions not asked for, are skipped. A karaoke seed gives a mix of
+     karaoke tracks, so every entry has a singable link. Tested on Pal Pal
+     Dil Ke Paas, Kesariya and Tum Hi Ho: 20 of 20 entries had karaoke links,
+     and 9–13 of 20 were already in the catalog, against 6–9 with an
+     original seed. It also picked the right song where an original seed
+     didn't (Pal Pal landed on the 2019 title track).
+   - With `seed="original"`, a `ytsearch5:"<song> song"` search for the
+     official upload. Karaoke, cover, instrumental, unplugged, reprise,
+     slowed and lofi results are skipped, and label channels win (Saregama,
+     T-Series, Sony Music India, Zee Music, Tips, YRF, Shemaroo, Universal
+     Music India, Eros Now, Venus).
+
+   The chosen seed is returned so you can see what it picked; pass `url` to be
+   exact.
+2. **Mix.** `source` is `youtube`, `youtube-music`, or `both` (merged by
+   video id; each item records its `sources`). A mix that can't be fetched
+   returns `error_code: mix_unavailable`. With `both`, one failing source
+   becomes a note and the other is still returned.
+3. **Song and film from each video title** (rules, no LLM). Emoji and
+   brackets become separators, then the title is split on `|`, ` - `, `: `,
+   `~`, `__` and `//`. Noise is stripped: Full Video/Song/Audio, Official
+   Video, Lyrical, Lyrics, HD/4K, Karaoke, Title Song, Bonus Track, version
+   words, Devanagari repeats, `Song -`/`Full Video:` prefixes. Segments that
+   are lists of people are dropped: commas, `&`, `ft.`, or a catalog
+   singer/composer/lyricist name, also at the end of a segment.
+
+   The first remaining segment is the song. A film comes from:
+   - `From "X"`;
+   - film-first `Film - Song` (Shemaroo) or `Film: Song` (T-Series);
+   - a segment matching a catalog film;
+   - the second segment when a list of people follows it ("Song | Film |
+     Actor, Actor").
+
+   Otherwise the film is left empty rather than guessed. The raw title is
+   kept on each video.
+4. **Clean.** Other uploads of the seed's song are dropped. Duplicates (the
+   original and its karaoke, or two channels) merge into one entry with all
+   their videos. `kind` is one of:
+   - **original**
+   - **karaoke**
+   - **cover:** unplugged, reprise, remix, slowed, lofi, instrumental, piano
+     and so on.
+   - **jukebox:** jukebox, medley, mashup, non-stop, "best of", or 15+
+     minutes long. Kept but flagged, and never merged.
+   - **other:** reaction, interview, trailer, status.
+
+   An entry takes the best kind among its videos. YouTube's order is kept as
+   `rank`.
+5. **Catalog marks** (read-only). Each `song_title` is scored against
+   `songs.csv` with the same matcher as `playlist_triage`, plus the film as
+   evidence: same film +10, a different film −5 (parsed films can be wrong, so
+   they can't veto a strong title match). A one-word catalog title
+   only matches exactly ("Safar" doesn't match "Lo Safar"). A best score
+   ≥ 85 sets `in_catalog` (the song_id) and `status`; `match_score` is always
+   given.
+
+Live result with `seed="original"`, seeded with the 1973 Shemaroo upload of
+*Pal Pal Dil Ke Paas* (`source="both"`, 20 entries, 12 in the catalog):
+
+```json
+{"seed": {"video_id": "AMuRRXCuy-4", "title": "Blackmail - Pal Pal Dil Ke Paas Tum Rehti Ho - Kishore Kumar",
+          "channel": "Shemaroo", "url": "https://www.youtube.com/watch?v=AMuRRXCuy-4",
+          "song_title": "Pal Pal Dil Ke Paas Tum Rehti Ho"},
+ "source": "both", "fetched": 37, "returned": 20, "in_catalog": 12,
+ "entries": [
+  {"rank": 1, "song_title": "O Mere Dil Ke Chain", "film": "", "kind": "original",
+   "sources": ["youtube", "youtube-music"], "in_catalog": "o-mere-dil-ke-chain-1972",
+   "status": "practicing", "match_score": 100.0,
+   "videos": [{"url": "https://www.youtube.com/watch?v=_w14bUcxl1c",
+               "title": "O Mere Dil Ke Chain | Full Lyrics Video | Kishore Kumar | Rajesh Khanna",
+               "channel": "ChordCanvas", "duration_sec": 274, "kind": "original"}]},
+  {"rank": 7, "song_title": "Dekha Ek Khwab", "film": "Silsila", "kind": "original",
+   "in_catalog": "dekha-ek-khwab-to-yeh-silsile-hue-1981", "match_score": 90.8, "…": "…"},
+  {"rank": 10, "song_title": "Tu Tu Hai Wahi", "film": "Yeh Vaada Raha", "kind": "original",
+   "in_catalog": "", "match_score": 61.4, "…": "…"}],
+ "notes": []}
+```
+
+Mixes are regenerated on every call, so two calls rarely return the same
+list.
+
 **`check_links(limit=50, offset=0)`** checks metadata only and never modifies
 the catalog. Network failures and rate limits go in `errors`, not `dead`,
 because they aren't evidence that the link is dead.
@@ -563,7 +658,7 @@ pins.
 venv/bin/python -m pytest
 ```
 
-204 tests, no network: requests and yt-dlp are patched to fail loudly. Each
+231 tests, no network: requests and yt-dlp are patched to fail loudly. Each
 test runs against a fresh temp copy of `tests/fixtures/wiki/`, which is a copy
 of the real `SCHEMA.md` and the empty skeleton. The tests cover:
 
@@ -610,7 +705,7 @@ npx @modelcontextprotocol/inspector \
   venv/bin/python server.py
 ```
 
-Add `--cli --method tools/list` to list the 23 tools in the terminal instead of
+Add `--cli --method tools/list` to list the 24 tools in the terminal instead of
 the browser.
 
 ## Wiring into Hermes

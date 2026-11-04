@@ -578,7 +578,9 @@ def match_score(catalog_title: str, song_text: str) -> float:
         # A short title followed by several more words may be a different song
         # ("Tum Hi Ho" vs "Tum Hi Ho Bandhu Sakha Tum Hi"): ask, don't assume.
         return 80.0 if len(a.split()) <= 3 and extra >= 3 else 95.0
-    return 0.5 * fuzz.token_set_ratio(a, song_text) + 0.5 * fuzz.token_sort_ratio(a, song_text)
+    score = 0.5 * fuzz.token_set_ratio(a, song_text) + 0.5 * fuzz.token_sort_ratio(a, song_text)
+    # A one-word catalog title ("Safar") only matches exactly, not "Lo Safar".
+    return min(score, 70.0) if len(a.split()) == 1 else score
 
 
 def playlist_triage(url: str, offset: int = 0, limit: int = 50) -> dict:
@@ -631,3 +633,355 @@ def playlist_triage(url: str, offset: int = 0, limit: int = 50) -> dict:
     next_offset = offset + limit if offset + limit < len(videos) else None
     return ok(**meta, total=len(videos), offset=offset, limit=limit, next_offset=next_offset,
               counts={k: len(v) for k, v in groups.items()}, **groups)
+
+
+# --- mixes ("similar songs") ------------------------------------------------------------
+
+MIX_SOURCES = ("youtube", "youtube-music", "both")
+MIX_SEEDS = ("original", "karaoke")
+SEED_SKIP_WORDS = ("karaoke", "cover", "instrumental", "unplugged", "reprise", "slowed",
+                   "lofi", "lo-fi")
+# Official label channels, preferred for seed="original" when they upload the song.
+LABEL_CHANNELS = ("saregama", "t-series", "tseries", "sony music india", "zee music",
+                  "tips official", "tips music", "tips films", "yrf", "shemaroo",
+                  "universal music india", "eros now music", "venus")
+# Seed/duplicate threshold: a mix item whose song matches the seed's song (or
+# another item's) at this score is the same song.
+SAME_SONG_SCORE = 90
+
+# Noise in Indian label/lyric-channel titles: removed from song and film parts.
+_TITLE_NOISE = re.compile(
+    r"\b(full\s+(?:video|song|audio|version|hd\s+video)|official\s+(?:music\s+)?(?:video|audio|"
+    r"lyric(?:al)?\s+video)|lyrical(?:\s+video)?|lyrics?(?:\s+video)?|with\s+lyrics|"
+    r"scrolling\s+lyrics|music\s+video|video\s+song|audio\s+song|full\s+lyrics|"
+    r"karaoke(?:\s+(?:track|version|song))?|hd|4k|8k|1080p|720p|remastered|"
+    r"title\s+(?:song|track)|bonus\s+track|(?:fe)?male(?:\s+version)?|version|reprised?|"
+    r"unplugged|remix|recreated|cover|"
+    r"video|audio|song|eng(?:lish)?|hindi)\b", re.I)
+_PREFIX_NOISE = re.compile(r"^\s*(?:full\s+(?:video|song|audio)|lyrical|song|video|audio)\s*[:\-–]\s*",
+                           re.I)
+_FROM_FILM = re.compile(r"""\(?\bfrom\s+["“']([^"”']+)["”']\)?""", re.I)
+_GENERIC_SEGMENT = re.compile(
+    r"\b(songs?|hits|hindi|bollywood|old|romantic|classic|evergreen|superhit|best|status|"
+    r"jukebox|playlist|official|music|records?|movie|film|retro|new|latest|lyrics?)\b", re.I)
+_MIX_SPLIT = re.compile(r"\s*(\|\||\||\s[-–—]\s?|\s~\s|__|//|:\s)\s*")
+
+KIND_RULES = [  # first match wins
+    ("jukebox", ("jukebox", "non stop", "non-stop", "nonstop", "medley", "mashup", "mash-up",
+                 "back to back", "best of", "collection", "top 10", "top 20", "top 50")),
+    ("karaoke", ("karaoke", "minus one", "minus track")),
+    ("other", ("reaction", "interview", "behind the scenes", "making of", "trailer", "teaser",
+               "dialogue", "#shorts", "whatsapp status", "status video")),
+    ("cover", ("cover", "unplugged", "reprise", "slowed", "lofi", "lo-fi", "reverb",
+               "female version", "male version", "piano", "guitar", "flute", "violin",
+               "saxophone", "instrumental", "acoustic", "remix", "recreated", "sung by")),
+]
+KIND_ORDER = {"original": 0, "karaoke": 1, "cover": 2, "other": 3, "jukebox": 4}
+
+
+def classify_kind(title: str, duration_sec: int | None = None) -> str:
+    t = unicodedata.normalize("NFKC", title or "").lower()
+    for kind, words in KIND_RULES:
+        if any(w in t for w in words):
+            return kind
+    if duration_sec and duration_sec >= 15 * 60:  # a 15-minute "song" is a compilation
+        return "jukebox"
+    return "original"
+
+
+def _known_names() -> set[str]:
+    """Singer/composer/lyricist names from the catalog, used to drop name lists
+    from video titles. Read-only; empty if the catalog can't be read."""
+    try:
+        rows = catalog.load_songs()
+    except Exception:
+        return set()
+    names = set()
+    for r in rows:
+        for col in ("singers", "music_director", "lyricist"):
+            names.update(n.strip().lower() for n in r[col].split(";") if len(n.strip()) > 3)
+    return names
+
+
+def _known_films() -> set[str]:
+    try:
+        return {normalize_title(r["film"]) for r in catalog.load_songs() if r["film"]}
+    except Exception:
+        return set()
+
+
+def _clean_segment(seg: str, names: set[str]) -> str:
+    seg = re.sub(r"[ऀ-ॿ]+", " ", seg)  # Devanagari repeats of the title
+    seg = re.sub(r"\((?:[^)]*\b(?:19|20)\d\d\b[^)]*)\)", " ", seg)  # "(1973)"
+    seg = re.sub(r"[\(\[][^)\]]*[\)\]]", lambda m: " " if _TITLE_NOISE.search(m.group(0))
+                 or len(m.group(0)) > 25 else m.group(0), seg)
+    seg = _TITLE_NOISE.sub(" ", seg)
+    seg = re.sub(r"#\S+", " ", seg)
+    seg = re.sub(r"(?:\s*[-–—:,.!|()\[\]~&+/])+\s*$", "", re.sub(r"\s+", " ", seg))
+    seg = seg.strip(" -–—:,.!|()[]~&+/")
+    low = seg.lower()
+    for name in sorted(names, key=len, reverse=True):  # trailing "… Kishore Kumar"
+        if low.endswith(" " + name) and len(low) > len(name) + 3:
+            seg, low = seg[: -len(name)].rstrip(" -–—:,&"), low[: -len(name)].rstrip(" -–—:,&")
+    return seg.strip()
+
+
+def _is_people(seg: str, names: set[str]) -> bool:
+    low = seg.lower()
+    if "," in seg or " & " in seg or " ft." in low or " feat" in low:
+        return True
+    return low in names or any(low.startswith(n) and len(low) <= len(n) + 3 for n in names)
+
+
+def parse_song_title(video_title: str, names: set[str] | None = None,
+                     films: set[str] | None = None) -> tuple[str, str]:
+    """Best-guess (song_title, film) from an Indian label/lyric/karaoke video
+    title. A heuristic: rules for the common patterns, no LLM."""
+    names = names if names is not None else set()
+    films = films if films is not None else set()
+    title = unicodedata.normalize("NFKC", video_title or "")
+    film = ""
+    m = _FROM_FILM.search(title)
+    if m:
+        film, title = m.group(1).strip(), title[:m.start()] + " " + title[m.end():]
+    title = _PREFIX_NOISE.sub("", title)
+    # Emoji and other symbols separate parts ("Meri Bheegi Bheegi Si ❤ Anamika").
+    title = "".join(" | " if unicodedata.category(c) == "So" else c for c in title)
+    # Brackets hold tags or credits, never the song: treat them as separators.
+    title = re.sub(r"[\(\[][^)\]]*[\)\]]?", " | ", title)
+    pieces = _MIX_SPLIT.split(title)
+    parts = []  # (text, is_people, separator before it) for every non-empty segment
+    sep = ""
+    for k, piece in enumerate(pieces):
+        if k % 2:  # captured separator
+            sep = piece.strip()
+            continue
+        seg = _clean_segment(piece, names)
+        if len(seg) >= 2:
+            parts.append((seg, _is_people(seg, names), sep))
+        sep = sep if len(seg) < 2 else ""
+    content = [i for i, (seg, people, _) in enumerate(parts)
+               if not people and not (i and _GENERIC_SEGMENT.search(seg))]
+    if not content:
+        return _clean_segment(video_title, names), film
+    is_film = lambda t: normalize_title(t) in films  # noqa: E731
+    song = parts[content[0]][0]
+    if len(content) > 1:
+        a, (b, _, sep_b), j = song, parts[content[1]], content[1]
+        if is_film(a) and not is_film(b) and sep_b in ("-", "–", "—", ":"):
+            song, film = b, film or a  # "Blackmail - Pal Pal Dil Ke Paas"
+        elif is_film(b):
+            film = film or b
+        elif sep_b in ("-", "–", "—", ":") and j == content[0] + 1 and \
+                (sep_b == ":" or (len(a.split()) <= 2 and len(b.split()) >= len(a.split()) + 3)):
+            # "Blackmail - Pal Pal Dil Ke Paas Tum Rehti Ho", "Luka Chuppi: Duniyaa"
+            song, film = b, film or a
+        elif not film:
+            # "Song | Film | Actor, Actor": only trust the second segment as the
+            # film when a list of people follows it.
+            people_next = j + 1 < len(parts) and parts[j + 1][1]
+            if people_next and len(b.split()) <= 6:
+                film = b
+    if not film:  # any later segment that is a known film
+        film = next((parts[i][0] for i in content[1:] if is_film(parts[i][0])), "")
+    if song.isupper():
+        song = song.title()
+    if film.isupper():
+        film = film.title()
+    return song, film
+
+
+def _same_song(a: str, b: str) -> bool:
+    na, nb = normalize_title(a), normalize_title(b)
+    if not na or not nb:
+        return False
+    return max(match_score(a, nb), match_score(b, na)) >= SAME_SONG_SCORE
+
+
+def _find_seed(song: str, url: str, seed: str) -> tuple[dict | None, dict | None]:
+    """Return (seed dict, None) or (None, fail-result)."""
+    if url:
+        clean, err = _check_video_url(url)
+        if err:
+            return None, err
+        vid = video_id_from_url(clean)
+        return {"video_id": vid, "title": "", "channel": "", "url": clean}, None
+    if seed == "karaoke":
+        # A plain "<song> karaoke" search finds the right song more reliably than
+        # karaoke_find's index match on short titles ("Tum Hi Ho"), and a karaoke
+        # seed gives a mix of karaoke tracks.
+        try:
+            info = _extract(f"ytsearch5:{song} karaoke", _base_opts() | {"extract_flat": True,
+                                                                        "noplaylist": False})
+        except Exception as e:
+            return None, fail(classify_error(str(e)), str(e))
+        preferred = _channel_key(preferred_channel_url())
+        pool = []
+        for i, e in enumerate(info.get("entries") or []):
+            vid, title = (e or {}).get("id") or "", (e or {}).get("title") or ""
+            if not VIDEO_ID_RE.match(vid) or "karaoke" not in title.lower():
+                continue
+            if title_score(song, title) < 60 or _penalty(title, song):  # other song / version
+                continue
+            is_pref = preferred in (_channel_key(e.get("uploader_id") or ""),
+                                    _channel_key(e.get("channel_url") or ""))
+            # Closeness first: "Tum Hi Ho, Hum Tere Bin…" on the preferred channel
+            # must not beat an exact "Tum Hi Ho" elsewhere.
+            text = song_part(title)
+            close = match_score(song, text) >= MATCH_SCORE
+            extra = abs(len(text.split()) - len(normalize_title(song).split()))
+            pool.append(((not close, not is_pref, extra), i, {"video_id": vid, "title": title,
+                                          "channel": e.get("channel") or e.get("uploader") or "",
+                                          "url": watch_url(vid)}))
+        if not pool:
+            return None, fail("no_seed", f"No karaoke video of '{song}' found in the top 5 results.")
+        pool.sort(key=lambda x: (x[0], x[1]))
+        return pool[0][2], None
+    try:
+        info = _extract(f"ytsearch5:{song} song", _base_opts() | {"extract_flat": True,
+                                                                  "noplaylist": False})
+    except Exception as e:
+        return None, fail(classify_error(str(e)), str(e))
+    pool = []
+    for i, e in enumerate(info.get("entries") or []):
+        vid, title = (e or {}).get("id") or "", (e or {}).get("title") or ""
+        low = unicodedata.normalize("NFKC", title).lower()
+        if not VIDEO_ID_RE.match(vid) or any(w in low for w in SEED_SKIP_WORDS):
+            continue
+        if title_score(song, title) < 60:  # a different song entirely
+            continue
+        channel = e.get("channel") or e.get("uploader") or ""
+        is_label = any(l in channel.lower() for l in LABEL_CHANNELS)
+        pool.append((not is_label, i, {"video_id": vid, "title": title, "channel": channel,
+                                       "url": watch_url(vid)}))
+    if not pool:
+        return None, fail("no_seed", f"No original upload of '{song}' found in the top 5 results.")
+    pool.sort(key=lambda x: (x[0], x[1]))
+    return pool[0][2], None
+
+
+def _fetch_mix(video_id: str, which: str, cap: int) -> tuple[list[dict], str]:
+    """Flat-list one auto-generated mix. Returns (entries, error message)."""
+    url = (f"https://music.youtube.com/watch?v={video_id}&list=RDAMVM{video_id}"
+           if which == "youtube-music" else
+           f"https://www.youtube.com/watch?v={video_id}&list=RD{video_id}")
+    opts = _base_opts() | {"extract_flat": "in_playlist", "noplaylist": False,
+                           "playlistend": cap, "lazy_playlist": True}
+    try:
+        info = _extract(url, opts)
+    except Exception as e:
+        return [], str(e)
+    entries = [e for e in (info.get("entries") or []) if e and VIDEO_ID_RE.match(e.get("id") or "")]
+    return entries[:cap], ("" if entries else "Mix returned no videos.")
+
+
+def youtube_mix(song: str = "", url: str = "", seed: str = "karaoke", source: str = "youtube",
+                limit: int = 25) -> dict:
+    song, url = (song or "").strip(), (url or "").strip()
+    seed, source = (seed or "karaoke").strip().lower(), (source or "youtube").strip().lower()
+    if not song and not url:
+        return fail("invalid_input", "Give a song name or a YouTube video url.")
+    if seed not in MIX_SEEDS:
+        return fail("invalid_input", f"seed must be one of {', '.join(MIX_SEEDS)}.")
+    if source not in MIX_SOURCES:
+        return fail("invalid_input", f"source must be one of {', '.join(MIX_SOURCES)}.")
+    try:
+        limit = max(1, min(int(limit), 100))
+    except (TypeError, ValueError):
+        return fail("invalid_input", "limit must be a whole number.")
+
+    seed_info, err = _find_seed(song, url, seed)
+    if err:
+        return err
+    sid = seed_info["video_id"]
+
+    wanted = ["youtube", "youtube-music"] if source == "both" else [source]
+    lists, errors = {}, {}
+    for which in wanted:
+        entries, msg = _fetch_mix(sid, which, limit + 5)
+        if entries:
+            lists[which] = entries
+        else:
+            errors[which] = msg[:200]
+    if not lists:
+        return fail("mix_unavailable", "; ".join(f"{k}: {v}" for k, v in errors.items())
+                    or "No mix for this video.", seed=seed_info)
+
+    # Merge sources by video id; rank = best position in any source (YouTube first on ties).
+    videos: dict[str, dict] = {}
+    for which in wanted:
+        for pos, e in enumerate(lists.get(which, [])):
+            vid = e["id"]
+            if vid == sid:
+                if not seed_info["title"]:
+                    seed_info["title"] = e.get("title") or ""
+                    seed_info["channel"] = e.get("channel") or e.get("uploader") or ""
+                continue
+            v = videos.setdefault(vid, {"video_id": vid, "url": watch_url(vid),
+                                        "title": re.sub(r"\s+", " ", e.get("title") or "").strip(),
+                                        "channel": e.get("channel") or e.get("uploader") or "",
+                                        "duration_sec": int(e["duration"]) if e.get("duration") else None,
+                                        "sources": [], "pos": (pos, wanted.index(which))})
+            if which not in v["sources"]:
+                v["sources"].append(which)
+            v["pos"] = min(v["pos"], (pos, wanted.index(which)))
+
+    names, films = _known_names(), _known_films()
+    seed_song, _ = parse_song_title(seed_info["title"], names, films) if seed_info["title"] else (song, "")
+    seed_info["song_title"] = seed_song
+
+    entries: list[dict] = []
+    for v in sorted(videos.values(), key=lambda v: v["pos"]):
+        kind = classify_kind(v["title"], v["duration_sec"])
+        song_title, film = parse_song_title(v["title"], names, films)
+        item = {"url": v["url"], "title": v["title"], "channel": v["channel"],
+                "duration_sec": v["duration_sec"], "kind": kind, "sources": v["sources"]}
+        if kind != "jukebox" and seed_song and _same_song(seed_song, song_title):
+            continue  # another upload of the seed song
+        target = None
+        if kind != "jukebox":
+            target = next((e for e in entries if e["kind"] != "jukebox"
+                           and _same_song(e["song_title"], song_title)), None)
+        if target:
+            target["videos"].append(item)
+            target["sources"] = sorted(set(target["sources"]) | set(v["sources"]))
+            target["film"] = target["film"] or film
+            if KIND_ORDER[kind] < KIND_ORDER[target["kind"]]:
+                target["kind"] = kind
+            continue
+        entries.append({"rank": 0, "song_title": song_title, "film": film, "kind": kind,
+                        "sources": list(v["sources"]), "videos": [item]})
+
+    # Catalog matches (read-only).
+    notes = [f"{k} mix unavailable: {v}" for k, v in errors.items()]
+    try:
+        songs = catalog.load_songs()
+    except Exception as e:
+        songs = []
+        notes.append(f"Catalog not read: {e}")
+    for rank, e in enumerate(entries[:limit], 1):
+        e["rank"] = rank
+        e["in_catalog"], e["status"], e["match_score"] = "", "", 0.0
+        if e["kind"] == "jukebox" or not songs:
+            continue
+        text = normalize_title(e["song_title"])
+        want_version = "unplugged" if e["kind"] == "cover" and "unplugged" in \
+            " ".join(x["title"].lower() for x in e["videos"]) else ""
+        def film_adj(row):
+            # Same film +10. A different film only -5: films parsed from video
+            # titles can be wrong, and must not veto a strong title match.
+            if not e["film"] or not row["film"]:
+                return 0
+            return 10 if fuzz.ratio(normalize_title(e["film"]), normalize_title(row["film"])) >= 85 else -5
+        scored = sorted(((match_score(s["title"], text) + film_adj(s)
+                          + (1 if _row_version(s["title"]) == want_version else 0), s) for s in songs),
+                        key=lambda x: -x[0])
+        if scored and scored[0][0] >= MATCH_SCORE:
+            sc, s = scored[0]
+            e["in_catalog"], e["status"] = s["song_id"], s["status"]
+            e["match_score"] = round(min(sc, 100.0), 1)
+        elif scored:
+            e["match_score"] = round(scored[0][0], 1)
+    out = entries[:limit]
+    return ok(seed=seed_info, source=source, fetched=len(videos) + 1, returned=len(out),
+              in_catalog=sum(1 for e in out if e["in_catalog"]), entries=out, notes=notes)

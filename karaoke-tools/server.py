@@ -240,6 +240,26 @@ def playlist_triage(url: str, offset: int = 0, limit: int = 50) -> dict:
 
 
 @tool
+def youtube_mix(song: str = "", url: str = "", seed: str = "karaoke", source: str = "youtube",
+                limit: int = 25) -> dict:
+    """Songs YouTube considers similar to a song, from its auto-generated Mix.
+
+    Seed: url (a YouTube video) or song. seed="karaoke" (default) searches
+    "<song> karaoke" and seeds from the first karaoke video of that song
+    (Anil Chauhan preferred), which gives a mix of karaoke tracks, every entry
+    with a singable link. seed="original" seeds from the official upload
+    (label channels preferred; karaoke, cover, unplugged etc. skipped). source: youtube (list=RD<id>), youtube-music (RDAMVM<id> on
+    music.youtube.com) or both (merged). Flat listing only, capped at limit
+    (max 100). Returns {seed: {video_id, title, channel, url, song_title},
+    entries: [{rank, song_title, film, kind: original|karaoke|cover|jukebox|
+    other, sources, in_catalog (song_id or ""), status, match_score, videos:
+    [{url, title, channel, duration_sec, kind}]}]}. Uploads of the seed song are
+    dropped and duplicates merged. song_title/film are parsed from video titles
+    by rules: verify before adding to the catalog. Read-only."""
+    return youtube.youtube_mix(song, url, seed, source, limit)
+
+
+@tool
 def check_links(limit: int = 50, offset: int = 0) -> dict:
     """Check catalog karaoke_url links (metadata only, catalog not modified).
     Returns {dead: [{song_id, title, url, status: private|removed|unavailable|...}],

@@ -238,3 +238,182 @@ def test_short_catalog_title_does_not_match_everything():
     assert youtube.match_score("Bole Chudiyan", "bole chudiyan bole kangna") >= youtube.MATCH_SCORE
     assert youtube.match_score("Deewana Hua Badal", "diwana hua badal") >= youtube.MATCH_SCORE
     assert youtube.MAYBE_SCORE <= youtube.match_score("Tum Hi Ho", "tum hi ho bandhu sakha tum hi") < youtube.MATCH_SCORE
+
+
+# --- youtube_mix -------------------------------------------------------------------------
+
+NAMES = {"kishore kumar", "lata mangeshkar", "r. d. burman", "asha bhosle", "mohammed rafi",
+         "arijit singh", "shreya ghoshal", "pritam"}
+FILMS = {"blackmail", "silsila", "humpty sharma ki dulhania", "chhichhore", "sanam re"}
+
+
+@pytest.mark.parametrize("title,song,film", [
+    ("Blackmail - Pal Pal Dil Ke Paas Tum Rehti Ho - Kishore Kumar", "Pal Pal Dil Ke Paas Tum Rehti Ho", "Blackmail"),
+    ("Dekha Ek Khwab Song | Silsila | Amitabh Bachchan, Rekha | Kishore Kumar", "Dekha Ek Khwab", "Silsila"),
+    ("Tu Tu Hai Wahi (Full Version)| Yeh Vaada Raha | Rishi Kapoor, Poonam Dhillon", "Tu Tu Hai Wahi", "Yeh Vaada Raha"),
+    ("Kya Hua Tera Wada-Lyrical | क्या हुआ तेरा वादा | Hum Kisise kum nahi | Mohammed Rafi", "Kya Hua Tera Wada", "Hum Kisise kum nahi"),
+    ("KAUN TUJHE Lyrical | M.S. DHONI -THE UNTOLD STORY | Amaal Mallik Palak | Sushant Singh", "Kaun Tujhe", ""),
+    ("SANAM RE Title Song FULL VIDEO | Pulkit Samrat, Yami Gautam | Divya Khosla Kumar", "Sanam Re", ""),
+    ("Full Song: KHAIRIYAT (BONUS TRACK) | CHHICHHORE | Sushant, Shraddha | Arijit Singh", "Khairiyat", "Chhichhore"),
+    ("Arijit Singh, Shreya Ghoshal - Samjhawan | Varun, Alia | Humpty Sharma Ki Dulhania", "Samjhawan", "Humpty Sharma Ki Dulhania"),
+    ("Luka Chuppi: Duniyaa Full Video Song | Kartik Aaryan Kriti Sanon | Akhil", "Duniyaa", "Luka Chuppi"),
+    ("Lut Gaye (Lyrical) Emraan Hashmi, Yukti | Jubin N, Tanishk B | Bhushan K", "Lut Gaye", ""),
+    ("Pal Pal Dil Ke Paas (Full Audio) Kishore Kumar | Dharmendra, Rakhee", "Pal Pal Dil Ke Paas", ""),
+    ('Tum Hi Ho (From "Aashiqui 2")', "Tum Hi Ho", "Aashiqui 2"),
+    ("Meri Bheegi Bheegi Si ❤ Anamika | Kishore Kumar", "Meri Bheegi Bheegi Si", "Anamika"),
+    ("Chhookar Mere Man Ko- - & Kishore Kumar | Karaoke", "Chhookar Mere Man Ko", ""),
+    ("Full Video: Kesariya | Brahmastra | Ranbir Kapoor, Alia Bhatt | Pritam | Arijit Singh", "Kesariya", "Brahmastra"),
+])
+def test_parse_song_title(title, song, film):
+    assert youtube.parse_song_title(title, NAMES, FILMS) == (song, film)
+
+
+@pytest.mark.parametrize("title,dur,kind", [
+    ("Kishore Kumar Hits | Audio Jukebox", 3600, "jukebox"),
+    ("Pal Pal Dil Ke Paas Karaoke With Scrolling Lyrics", 320, "karaoke"),
+    ("Pal Pal Dil Ke Paas | Unplugged Cover by Someone", 240, "cover"),
+    ("Saiyaara Reprise - Female | Full Song", 250, "cover"),
+    ("Kesariya | Reaction Video", 600, "other"),
+    ("Kesariya | Brahmastra | Full Video", 300, "original"),
+    ("Old Is Gold Evergreen Songs", 2400, "jukebox"),
+])
+def test_classify_kind(title, dur, kind):
+    assert youtube.classify_kind(title, dur) == kind
+
+
+def test_one_word_catalog_title_needs_exact_match():
+    assert youtube.match_score("Safar", "lo safar") < youtube.MATCH_SCORE
+    assert youtube.match_score("Safar", "safar") == 100
+
+
+SEARCH = {"entries": [
+    {"id": "kkkkkkkkkk1", "title": "Pal Pal Dil Ke Paas Karaoke", "channel": "Karaoke Co"},
+    {"id": "ccccccccccc", "title": "Pal Pal Dil Ke Paas | Cover", "channel": "Coverist"},
+    {"id": "fanfanfan01", "title": "Pal Pal Dil Ke Paas Tum Rehti Ho", "channel": "Random Fan"},
+    {"id": "AMuRRXCuy-4", "title": "Blackmail - Pal Pal Dil Ke Paas Tum Rehti Ho - Kishore Kumar", "channel": "Shemaroo"},
+]}
+MIX_YT = {"entries": [
+    {"id": "AMuRRXCuy-4", "title": "Blackmail - Pal Pal Dil Ke Paas Tum Rehti Ho - Kishore Kumar", "channel": "Shemaroo", "duration": 315},
+    {"id": "aaaaaaaaaa1", "title": "O Mere Dil Ke Chain | Full Lyrics Video | Kishore Kumar", "channel": "ChordCanvas", "duration": 274},
+    {"id": "aaaaaaaaaa2", "title": "Pal Pal Dil Ke Paas (Full Audio) Kishore Kumar | Dharmendra, Rakhee", "channel": "Universal", "duration": 313},
+    {"id": "aaaaaaaaaa3", "title": "Dekha Ek Khwab Song | Silsila | Amitabh Bachchan, Rekha", "channel": "YRF", "duration": 267},
+    {"id": "aaaaaaaaaa4", "title": "Kishore Kumar Hits | Audio Jukebox", "channel": "Saregama", "duration": 3600},
+    {"id": "aaaaaaaaaa5", "title": "O Mere Dil Ke Chain Karaoke With Scrolling Lyrics", "channel": "Karaoke Co", "duration": 280},
+]}
+MIX_YTM = {"entries": [
+    {"id": "AMuRRXCuy-4", "title": "Blackmail - Pal Pal Dil Ke Paas Tum Rehti Ho - Kishore Kumar", "channel": "Shemaroo", "duration": 315},
+    {"id": "aaaaaaaaaa3", "title": "Dekha Ek Khwab Song | Silsila | Amitabh Bachchan, Rekha", "channel": "YRF", "duration": 267},
+    {"id": "aaaaaaaaaa6", "title": "Kya Hua Tera Wada-Lyrical | Hum Kisise kum nahi | Mohammed Rafi", "channel": "RD", "duration": 275},
+]}
+
+
+@pytest.fixture
+def mix(wiki, monkeypatch):
+    import catalog
+    catalog.catalog_upsert({"title": "O Mere Dil Ke Chain", "film": "Mere Jeevan Saathi", "year": 1972,
+                            "singers": "Kishore Kumar", "status": "ready"})
+    catalog.catalog_upsert({"title": "Dekha Ek Khwab To Yeh Silsile Hue", "film": "Silsila", "year": 1981})
+    calls = []
+
+    def fake_extract(url, opts, download=False):
+        calls.append((url, opts))
+        if url.startswith("ytsearch5:"):
+            return SEARCH
+        if "music.youtube.com" in url:
+            return MIX_YTM
+        return MIX_YT
+
+    monkeypatch.setattr(youtube, "_extract", fake_extract)
+    return calls
+
+
+def test_mix_original_seed_prefers_label_and_skips_karaoke(mix):
+    r = youtube.youtube_mix(song="Pal Pal Dil Ke Paas", seed="original", limit=10)
+    assert r["success"], r
+    assert mix[0][0] == "ytsearch5:Pal Pal Dil Ke Paas song"
+    assert r["seed"]["video_id"] == "AMuRRXCuy-4" and r["seed"]["channel"] == "Shemaroo"
+    url, opts = mix[1]
+    assert url == "https://www.youtube.com/watch?v=AMuRRXCuy-4&list=RDAMuRRXCuy-4"
+    assert opts["playlistend"] == 15 and opts["extract_flat"] == "in_playlist"
+
+
+def test_mix_cleans_merges_and_marks_catalog(mix):
+    r = youtube.youtube_mix(url="https://youtu.be/AMuRRXCuy-4", source="both", limit=10)
+    assert [c[0] for c in mix] == ["https://www.youtube.com/watch?v=AMuRRXCuy-4&list=RDAMuRRXCuy-4",
+                                   "https://music.youtube.com/watch?v=AMuRRXCuy-4&list=RDAMVMAMuRRXCuy-4"]
+    titles = [e["song_title"] for e in r["entries"]]
+    assert "Pal Pal Dil Ke Paas" not in titles  # another upload of the seed song is dropped
+    chain = next(e for e in r["entries"] if e["song_title"] == "O Mere Dil Ke Chain")
+    assert chain["kind"] == "original" and len(chain["videos"]) == 2  # original + karaoke merged
+    assert sorted(v["kind"] for v in chain["videos"]) == ["karaoke", "original"]
+    assert chain["in_catalog"] == "o-mere-dil-ke-chain-1972" and chain["status"] == "ready"
+    khwab = next(e for e in r["entries"] if e["song_title"] == "Dekha Ek Khwab")
+    assert khwab["sources"] == ["youtube", "youtube-music"] and khwab["film"] == "Silsila"
+    assert khwab["in_catalog"] == "dekha-ek-khwab-to-yeh-silsile-hue-1981"  # film corroborates
+    juke = next(e for e in r["entries"] if e["kind"] == "jukebox")
+    assert juke["in_catalog"] == ""
+    wada = next(e for e in r["entries"] if e["song_title"] == "Kya Hua Tera Wada")
+    assert wada["sources"] == ["youtube-music"] and wada["in_catalog"] == ""
+    assert [e["rank"] for e in r["entries"]] == list(range(1, len(r["entries"]) + 1))
+    assert r["entries"][0]["song_title"] == "O Mere Dil Ke Chain"  # YouTube order kept
+
+
+def test_mix_is_read_only(mix, wiki):
+    before = (wiki / "catalog/songs.csv").read_text()
+    youtube.youtube_mix(url="https://youtu.be/AMuRRXCuy-4", source="both")
+    assert (wiki / "catalog/songs.csv").read_text() == before
+
+
+KARAOKE_SEARCH = {"entries": [
+    {"id": "wrongsong01", "title": "Tum Hi Ho Bandhu Sakha Tum Hi Karaoke", "channel": "X"},
+    {"id": "unplugged01", "title": "Pal Pal Dil Ke Paas Unplugged Karaoke", "channel": "Y"},
+    {"id": "otherkar001", "title": "Pal Pal Dil Ke Paas Karaoke with Lyrics", "channel": "Sing Along"},
+    {"id": "longtitle01", "title": "Pal Pal Dil Ke Paas, Kuch Aur Hai Yeh Gaana Bilkul - Full Karaoke",
+     "channel": "ANIL CHAUHAN KARAOKE", "uploader_id": "@AnilChauhankaraoke"},
+    {"id": "pw6r-izZArA", "title": "Pal Pal Dil Ke Paas Tum Rehti Ho - Full Karaoke", "channel": "ANIL CHAUHAN KARAOKE",
+     "uploader_id": "@AnilChauhankaraoke"},
+]}
+
+
+def test_mix_karaoke_seed_is_default_and_prefers_anil_chauhan(wiki, monkeypatch):
+    calls = []
+
+    def fake_extract(url, opts, download=False):
+        calls.append(url)
+        return KARAOKE_SEARCH if url.startswith("ytsearch5:") else MIX_YT
+
+    monkeypatch.setattr(youtube, "_extract", fake_extract)
+    r = youtube.youtube_mix(song="Pal Pal Dil Ke Paas")
+    assert calls[0] == "ytsearch5:Pal Pal Dil Ke Paas karaoke"
+    assert r["seed"]["video_id"] == "pw6r-izZArA"  # preferred channel; unplugged/other song skipped
+    assert calls[1].endswith("list=RDpw6r-izZArA")
+
+
+def test_mix_seed_closeness_beats_preferred_channel(wiki, monkeypatch):
+    entries = [
+        {"id": "wrongsong02", "title": "Tum Hi Ho, Hum Tere Bin Ab Reh Nahin Sakte - Full Karaoke",
+         "channel": "ANIL CHAUHAN KARAOKE", "uploader_id": "@AnilChauhankaraoke"},
+        {"id": "rightsong01", "title": "Tum Hi Ho Karaoke with Lyrics Full Song - Aashiqui 2", "channel": "Z"},
+    ]
+    monkeypatch.setattr(youtube, "_extract", lambda url, opts, download=False:
+                        {"entries": entries} if url.startswith("ytsearch5:") else MIX_YT)
+    assert youtube.youtube_mix(song="Tum Hi Ho")["seed"]["video_id"] == "rightsong01"
+
+
+def test_mix_karaoke_seed_needs_a_karaoke_of_this_song(wiki, monkeypatch):
+    monkeypatch.setattr(youtube, "_extract", lambda url, opts, download=False: {"entries": [
+        {"id": "wrongsong01", "title": "Tum Hi Ho Bandhu Sakha Tum Hi Karaoke", "channel": "X"},
+        {"id": "origsong001", "title": "Pal Pal Dil Ke Paas | Official Video", "channel": "Saregama"}]})
+    assert youtube.youtube_mix(song="Pal Pal Dil Ke Paas")["error_code"] == "no_seed"
+
+
+def test_mix_unavailable_and_bad_input(wiki, monkeypatch):
+    def boom(url, opts, download=False):
+        raise Exception("ERROR: The playlist does not exist.")
+    monkeypatch.setattr(youtube, "_extract", boom)
+    r = youtube.youtube_mix(url="https://youtu.be/AMuRRXCuy-4")
+    assert r["error_code"] == "mix_unavailable" and r["seed"]["video_id"] == "AMuRRXCuy-4"
+    assert youtube.youtube_mix()["error_code"] == "invalid_input"
+    assert youtube.youtube_mix(song="x", source="spotify")["error_code"] == "invalid_input"
+    assert youtube.youtube_mix(song="x", seed="cover")["error_code"] == "invalid_input"
+    assert youtube.youtube_mix(url="https://vimeo.com/1")["error_code"] == "domain_not_allowed"
