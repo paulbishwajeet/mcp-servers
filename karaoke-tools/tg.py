@@ -2,10 +2,7 @@
 
 The Hermes gateway owns the bot's incoming updates. Calling getUpdates or
 setting a webhook from here would steal them, so this module can only call
-sendMessage, sendPoll, stopPoll and setChatMenuButton, and only for
-TELEGRAM_CHAT_ID. Poll votes
-are read by closing the poll (stopPoll returns the final counts), not from
-updates.
+sendMessage and setChatMenuButton, and only for TELEGRAM_CHAT_ID.
 
 Buttons are a reply keyboard (BUTTON_MODE=reply): tapping a button sends its
 text as an ordinary message, which Hermes already delivers to the agent.
@@ -19,14 +16,10 @@ import re
 
 import requests
 
-from common import button_mode, fail, log, ok, telegram_chat_id, telegram_token
+from common import button_mode, fail, ok, telegram_chat_id, telegram_token
 
 API = "https://api.telegram.org/bot{token}/{method}"
-ALLOWED_METHODS = {"sendMessage", "sendPoll", "stopPoll", "setChatMenuButton"}
-# Bot API 10.3 sendPoll limits (core.telegram.org/bots/api, checked 2026-11-05).
-MAX_POLL_OPTIONS = 12
-MAX_OPTION_LEN = 100
-MAX_QUESTION_LEN = 300
+ALLOWED_METHODS = {"sendMessage", "setChatMenuButton"}
 TIMEOUT = 15
 # Telegram's practical ceiling for a keyboard is ~100 buttons. A chat shows one
 # reply keyboard at a time (a newer one replaces it), so a page stays in one
@@ -105,33 +98,6 @@ def set_menu_button(text: str, url: str) -> dict:
 def clip(text: str, limit: int) -> str:
     text = " ".join((text or "").split())
     return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
-
-
-def send_poll(question: str, options: list[str]) -> dict:
-    """A multi-select, anonymous poll in Neel's chat. Returns {message_id}.
-
-    No reply_markup: Telegram accepts ReplyKeyboardRemove on sendPoll, but a
-    poll sent with it can't be closed later ("poll can't be stopped"), and
-    closing is how votes are read. Remove an old keyboard with a separate
-    message instead."""
-    allowed = telegram_chat_id()
-    if not allowed:
-        return fail("telegram_not_configured", "TELEGRAM_CHAT_ID is not set.")
-    if not 2 <= len(options) <= MAX_POLL_OPTIONS:
-        return fail("invalid_input", f"A poll needs 2-{MAX_POLL_OPTIONS} options.")
-    payload = {"chat_id": allowed, "question": clip(question, MAX_QUESTION_LEN),
-               "options": [{"text": clip(o, MAX_OPTION_LEN)} for o in options],
-               "is_anonymous": True, "allows_multiple_answers": True}
-    return _call("sendPoll", payload)
-
-
-def stop_poll(message_id: int) -> dict:
-    """Close a poll the bot sent; returns {poll} with voter_count per option."""
-    allowed = telegram_chat_id()
-    if not allowed:
-        return fail("telegram_not_configured", "TELEGRAM_CHAT_ID is not set.")
-    r = _call("stopPoll", {"chat_id": allowed, "message_id": message_id})
-    return ok(poll=r["result"]) if r["success"] else r
 
 
 def split_keyboard(rows: list[list[str]], footer: list[str]) -> list[list[list[str]]]:

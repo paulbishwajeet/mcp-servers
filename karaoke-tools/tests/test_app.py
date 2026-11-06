@@ -212,9 +212,9 @@ def test_menu_button(wiki, telegram):
 
 
 def test_never_get_updates_or_webhook(wiki, telegram):
-    for method in ("getUpdates", "setWebhook", "deleteWebhook"):
+    for method in ("getUpdates", "setWebhook", "deleteWebhook", "sendPoll", "stopPoll"):
         assert tg._call(method, {})["error_code"] == "not_allowed"
-    assert tg.ALLOWED_METHODS == {"sendMessage", "sendPoll", "stopPoll", "setChatMenuButton"}
+    assert tg.ALLOWED_METHODS == {"sendMessage", "setChatMenuButton"}
     # No code names those methods as a string (docs and comments may mention them).
     call = re.compile(r"""["'/](getUpdates|setWebhook|deleteWebhook)["']""")
     for f in [*ROOT.glob("*.py"), *ROOT.glob("app/*.py"), ROOT / "app/static/app.js"]:

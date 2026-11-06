@@ -11,14 +11,13 @@ import copy
 import re
 import uuid
 from datetime import date, datetime
-from pathlib import Path
 
 import cache
 import catalog
 import feedback
 import vocab
 import youtube
-from common import fail, log, ok
+from common import fail, ok
 
 RANKING_REL = "ranking.yaml"
 
@@ -430,10 +429,6 @@ def suggest(mode: str, reference: str = "", url: str = "", references: list | st
     if mode == "next" and not query:
         return fail("invalid_input", "mode=next needs query (e.g. 'peppy old').")
 
-    # Votes from earlier lists first, so they count in this ranking.
-    prev = feedback.feedback_collect() if any(
-        p["status"] == "open" for r in feedback.load_state()["requests"] for p in r.get("polls", [])) \
-        else None
     W, warnings = load_weights()
     refs = [_resolve(r) for r in refs_in] if mode == "plan" else \
         ([_resolve(reference)] if reference else [{"key": "", "title": url, "row": None}]) \
@@ -460,13 +455,11 @@ def suggest(mode: str, reference: str = "", url: str = "", references: list | st
     feedback.push_request(req)
     sent = feedback.send_feedback(req, items) if send_buttons and items else None
     if sent and not sent.get("success"):
-        warnings.append(f"Feedback buttons/polls not sent: {sent.get('error')}")
+        warnings.append(f"Feedback buttons not sent: {sent.get('error')}")
     out = ok(request_id=req["request_id"], mode=mode, reference_key=ref_key,
              reference_title=ref_title, items=items,
              remaining={g: len(req["ranked"][g]) - req["cursor"][g] for g in ("catalog", "outside")},
              buttons_sent=bool(sent and sent.get("success")), warnings=warnings)
-    if prev:
-        out["previous_feedback"] = {k: prev[k] for k in ("collected", "conflicts", "lost", "reply")}
     if sent and sent.get("typed_only"):
         out["typed_only"] = sent["typed_only"]
     return out
@@ -486,4 +479,4 @@ def suggest_more(send_buttons: bool = True) -> dict:
               items=items, buttons_sent=bool(sent and sent.get("success")),
               remaining={g: len(req["ranked"][g]) - req["cursor"][g] for g in ("catalog", "outside")},
               warnings=[] if not sent or sent.get("success") else
-              [f"Feedback buttons/polls not sent: {sent.get('error')}"])
+              [f"Feedback buttons not sent: {sent.get('error')}"])

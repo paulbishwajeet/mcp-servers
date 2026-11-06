@@ -109,15 +109,16 @@ def app_url() -> str:
     return os.environ.get("APP_URL", "").strip().rstrip("/")
 
 
-FEEDBACK_MODES = ("poll", "keyboard", "off")
+FEEDBACK_MODES = ("off", "keyboard")
 
 
 def feedback_mode() -> str:
-    """poll (default): 👍/👎 multi-select polls; keyboard: the older per-song
-    reply-keyboard buttons; off: no feedback UI is sent (typed feedback such as
-    "fb 1👍" and "rate 3 9" still works)."""
-    mode = os.environ.get("FEEDBACK_MODE", "poll").strip().lower()
-    return mode if mode in FEEDBACK_MODES else "poll"
+    """off (default): no feedback UI in the chat; likes and ratings happen in
+    the Mini App, and typed feedback such as "fb 1👍" and "rate 3 9" still
+    works. keyboard: the older per-song reply-keyboard buttons. Anything else
+    (including the retired "poll") means off."""
+    mode = os.environ.get("FEEDBACK_MODE", "off").strip().lower()
+    return mode if mode in FEEDBACK_MODES else "off"
 
 
 def button_mode() -> str:

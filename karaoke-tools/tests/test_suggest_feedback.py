@@ -21,8 +21,8 @@ TODAY = date.today().isoformat()
 
 @pytest.fixture(autouse=True)
 def keyboard_mode(monkeypatch):
-    """These tests cover FEEDBACK_MODE=keyboard (the older button UI); the poll
-    UI (the default) is covered in test_polls.py."""
+    """Most of these cover FEEDBACK_MODE=keyboard (the reply-keyboard UI);
+    test_off_mode_* cover the default, off."""
     monkeypatch.setenv("FEEDBACK_MODE", "keyboard")
 
 
@@ -422,3 +422,29 @@ def test_retired_mix_matches_are_dropped(mix, songs, telegram):
     catalog.catalog_upsert({"song_id": songs["shaam"], "status": "retired"})
     r = suggest.suggest(mode="like", reference="Pal Pal Dil Ke Paas", send_buttons=False)
     assert "Yeh Shaam Mastani" not in [i["title"] for i in r["items"]]
+
+
+# --- FEEDBACK_MODE=off (the default since the Mini App) -------------------------------------
+
+@pytest.mark.parametrize("value", [None, "off", "poll", "nonsense"])
+def test_off_mode_is_the_default_and_sends_nothing(mix, telegram, monkeypatch, value):
+    if value is None:
+        monkeypatch.delenv("FEEDBACK_MODE", raising=False)
+    else:
+        monkeypatch.setenv("FEEDBACK_MODE", value)  # the retired "poll" means off
+    r = suggest.suggest(mode="like", reference="Pal Pal Dil Ke Paas")
+    assert r["success"] and r["items"] and not r["buttons_sent"]
+    assert telegram.calls == []
+    assert "previous_feedback" not in r
+
+
+def test_off_mode_typed_feedback_still_works(mix, telegram, wiki, monkeypatch):
+    monkeypatch.setenv("FEEDBACK_MODE", "off")
+    items = {i["n"]: i for i in suggest.suggest(mode="after", reference="Pal Pal Dil Ke Paas")["items"]}
+    assert feedback.feedback_tap("fb 1👍")["handled"]
+    assert rel_rows(wiki)[-1]["verdict"] == "up"
+    assert "Type 1 ⭐" in feedback.feedback_tap("1 ⭐")["reply"]
+    assert feedback.feedback_tap("done")["reply"] == "👍 thanks"
+    assert "fb 1👍" in feedback.feedback_tap("back")["reply"]
+    assert telegram.calls == []
+    assert items
