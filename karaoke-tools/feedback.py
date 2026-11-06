@@ -42,6 +42,7 @@ def load_state() -> dict:
         data = {}
     data.setdefault("requests", [])
     data.setdefault("pending_ratings", {})
+    data.setdefault("keyboard_shown", False)  # an old reply keyboard may be on screen
     return data
 
 
@@ -212,7 +213,16 @@ def send_main_keyboard(req: dict) -> dict:
         result = tg.send(text, keyboard=kb)
         if not result["success"]:
             return result
+    _set_keyboard_shown(True)
     return result
+
+
+def _set_keyboard_shown(value: bool) -> None:
+    with _lock:
+        st = load_state()
+        if st["keyboard_shown"] != value:
+            st["keyboard_shown"] = value
+            save_state(st)
 
 
 def send_buttons(request_id: str = "") -> dict:
@@ -292,13 +302,17 @@ def send_polls(req: dict, items: list[dict]) -> dict:
     polled, typed_only = poll_groups(items)
     q_up, q_down = _questions(req)
     req.setdefault("polls", [])
-    sent, first = 0, True
+    if polled and load_state()["keyboard_shown"]:
+        # A separate message: a poll carrying ReplyKeyboardRemove can't be stopped.
+        r = tg.send("👍/👎 feedback is now by poll ⬇️", remove_keyboard=True)
+        if r["success"]:
+            _set_keyboard_shown(False)
+    sent = 0
     for label, part in polled:
         suffix = f" ({label})" if label else ""
         options = [_poll_option(it) for it in part]
         for kind, question in (("up", q_up), ("down", q_down)):
-            r = tg.send_poll(question + suffix, options, remove_keyboard=first)
-            first = False
+            r = tg.send_poll(question + suffix, options)
             if not r["success"]:
                 save_request(req)
                 return r | {"polls_sent": sent, "typed_only": typed_only}
@@ -484,6 +498,8 @@ def feedback_tap(text: str) -> dict:
                 r = feedback_collect(req["request_id"])
                 return r | {"handled": True}
             r = tg.send("👍 thanks", remove_keyboard=True)
+            if r["success"]:
+                _set_keyboard_shown(False)
             return ok(handled=True, reply="", sent=r["success"],
                       warnings=[] if r["success"] else [r["error"]])
         if low == "back":

@@ -76,8 +76,13 @@ def clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
 
 
-def send_poll(question: str, options: list[str], remove_keyboard: bool = False) -> dict:
-    """A multi-select, anonymous poll in Neel's chat. Returns {message_id}."""
+def send_poll(question: str, options: list[str]) -> dict:
+    """A multi-select, anonymous poll in Neel's chat. Returns {message_id}.
+
+    No reply_markup: Telegram accepts ReplyKeyboardRemove on sendPoll, but a
+    poll sent with it can't be closed later ("poll can't be stopped"), and
+    closing is how votes are read. Remove an old keyboard with a separate
+    message instead."""
     allowed = telegram_chat_id()
     if not allowed:
         return fail("telegram_not_configured", "TELEGRAM_CHAT_ID is not set.")
@@ -86,8 +91,6 @@ def send_poll(question: str, options: list[str], remove_keyboard: bool = False) 
     payload = {"chat_id": allowed, "question": clip(question, MAX_QUESTION_LEN),
                "options": [{"text": clip(o, MAX_OPTION_LEN)} for o in options],
                "is_anonymous": True, "allows_multiple_answers": True}
-    if remove_keyboard:  # sendPoll accepts ReplyKeyboardRemove: old buttons go away
-        payload["reply_markup"] = {"remove_keyboard": True}
     return _call("sendPoll", payload)
 
 

@@ -48,8 +48,8 @@ def test_poll_pair_payload(mix, telegram):
     for p in polls:
         assert p["chat_id"] == "4242"
         assert p["allows_multiple_answers"] is True and p["is_anonymous"] is True
-    assert up["reply_markup"] == {"remove_keyboard": True}  # old buttons go, once
-    assert "reply_markup" not in down
+    # Never on a poll: Telegram can't stop a poll sent with ReplyKeyboardRemove.
+    assert all("reply_markup" not in p for p in polls)
     texts = [o["text"] for o in up["options"]]
     assert texts[0] == f"#1 {r['items'][0]['title']} (Kishore Kumar)"
     assert texts == [o["text"] for o in down["options"]]
@@ -264,3 +264,27 @@ def test_never_receives_updates(mix, telegram, wiki):
     assert {m for m, _ in telegram.calls} <= {"sendPoll", "stopPoll", "sendMessage"}
     assert tg._call("getUpdates", {})["error_code"] == "not_allowed"
     assert tg._call("setWebhook", {})["error_code"] == "not_allowed"
+
+
+def test_old_keyboard_removed_by_separate_message(mix, telegram, wiki, monkeypatch):
+    monkeypatch.setenv("FEEDBACK_MODE", "keyboard")
+    run_like()  # leaves a reply keyboard on screen
+    assert feedback.load_state()["keyboard_shown"] is True
+    monkeypatch.setenv("FEEDBACK_MODE", "poll")
+    before = len(telegram.calls)
+    run_like()
+    new = telegram.calls[before:]
+    assert new[0] == ("sendMessage", new[0][1]) and new[0][1]["reply_markup"] == {"remove_keyboard": True}
+    assert [m for m, _ in new[1:]] == ["sendPoll", "sendPoll"]
+    assert all("reply_markup" not in p for m, p in new if m == "sendPoll")
+    assert feedback.load_state()["keyboard_shown"] is False
+    run_like()  # no keyboard to remove any more: no extra message
+    assert [m for m, _ in telegram.calls[-2:]] == ["sendPoll", "sendPoll"]
+
+
+def test_all_polls_of_a_page_can_be_collected(mix, telegram, wiki):
+    run_like()
+    ids = [p["message_id"] for p in feedback.latest_request()["polls"]]
+    telegram.votes = {ids[0]: [0]}
+    c = feedback.feedback_collect()
+    assert c["lost"] == [] and len(c["collected"]) == 1  # the first poll too

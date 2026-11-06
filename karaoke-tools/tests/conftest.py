@@ -73,7 +73,9 @@ class FakeTelegram:
             body = {"ok": True, "result": {"message_id": mid}}
         elif method == "stopPoll":
             m = json["message_id"]
-            if m in self.stop_errors:
+            if "reply_markup" in self.polls.get(m, {}):  # like the real API (seen 2026-11-05)
+                body = {"ok": False, "description": "Bad Request: poll can't be stopped"}
+            elif m in self.stop_errors:
                 body = {"ok": False, "description": self.stop_errors[m]}
             else:
                 opts = self.polls.get(m, {}).get("options", [])
