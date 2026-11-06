@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
+  <title>KaraokeGayak</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div id="crumbs" class="crumbs" hidden></div>
+  <main id="views"></main>
+
+  <div id="toast" class="toast" hidden>
+    <span id="toast-text"></span>
+    <button id="toast-undo" class="link" type="button" hidden>Undo</button>
+  </div>
+
+  <!-- player overlay -->
+  <div id="player" class="overlay" hidden>
+    <div class="player-box">
+      <div class="player-tabs">
+        <button type="button" data-tab="karaoke" class="tab">Karaoke</button>
+        <button type="button" data-tab="original" class="tab">Original</button>
+        <span class="grow"></span>
+        <button type="button" id="player-fs" class="icon" title="Fullscreen" aria-label="Fullscreen">⛶</button>
+        <button type="button" id="player-close" class="icon" title="Close" aria-label="Close">✕</button>
+      </div>
+      <div id="player-title" class="player-title"></div>
+      <div id="player-frame" class="player-frame"><div id="yt"></div></div>
+      <div id="player-fallback" class="player-fallback" hidden>
+        <p id="player-fallback-text">This video can't play inside Telegram.</p>
+        <button type="button" id="player-open" class="btn">Open in YouTube</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- rating wheel -->
+  <div id="rating" class="sheet-wrap" hidden>
+    <div class="sheet small">
+      <div class="sheet-head"><b id="rating-title">Rating</b></div>
+      <p class="hint">10 = favourite, most comfortable · 5 and below = needs practice</p>
+      <div class="wheel-box"><div id="wheel" class="wheel"></div><div class="wheel-mark"></div></div>
+      <div class="row-buttons">
+        <button type="button" id="rating-clear" class="btn secondary">Clear</button>
+        <button type="button" id="rating-set" class="btn">Set</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- edit sheet -->
+  <div id="edit" class="sheet-wrap" hidden>
+    <form id="edit-form" class="sheet" novalidate>
+      <div class="sheet-head">
+        <b id="edit-title">Edit song</b>
+        <span class="grow"></span>
+        <button type="button" id="edit-cancel" class="icon" aria-label="Close">✕</button>
+      </div>
+      <div id="edit-body"></div>
+      <p id="edit-error" class="error" hidden></p>
+      <div class="row-buttons sticky">
+        <button type="button" id="edit-reanalyse" class="btn secondary" hidden>Re-analyse</button>
+        <button type="submit" id="edit-save" class="btn">Save</button>
+      </div>
+    </form>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

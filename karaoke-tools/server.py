@@ -12,9 +12,11 @@ channel; all logging goes to stderr.
 
 Env vars: WIKI_ROOT, SEED_ROOT, MEDIA_ROOT, PREFERRED_CHANNEL_URL,
 MAX_DURATION_SEC, FFMPEG_PATH, YTDLP_JS_RUNTIME, GENIUS_ACCESS_TOKEN,
-LYRICS_EXTRA_DOMAINS, LYRICS_DELAY_SEC (see .env.example).
+LYRICS_EXTRA_DOMAINS, LYRICS_DELAY_SEC, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+STATE_ROOT, FEEDBACK_MODE, APP_URL (see .env.example).
 """
 
+import appstart
 import audio
 import catalog
 import feedback
@@ -375,6 +377,19 @@ def relations_for(ref: str, limit: int = 10) -> dict:
     tapped as fitting after/with it) and it_goes_after. For "what goes well
     after X?"."""
     return feedback.relations_for(ref, limit)
+
+
+# --- Mini App ------------------------------------------------------------------------------------
+
+
+@tool
+def open_app(view: str = "similar", seed: str = "", url: str = "") -> dict:
+    """Send Neel one short line with a 🎵 Open button that opens the Mini App
+    (the agent can't open it directly; Telegram needs a tap). view=similar opens
+    Suggest Similar for seed (a song title or song_id) or url (a YouTube link);
+    view=home opens the app's home/search. Use it for "songs like X" requests
+    once the app is set up. Returns {sent, code}."""
+    return appstart.open_app(view, seed, url)
 
 
 # --- lyrics + metadata ---------------------------------------------------------------------------

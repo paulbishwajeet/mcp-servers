@@ -106,7 +106,13 @@ enforces each one:
 | `lookup.py` | Wikipedia soundtrack lookup |
 | `suggest.py` | `suggest`, `suggest_more`: candidates, ranking.yaml scoring, numbering |
 | `feedback.py` | Relations, ratings, feedback polls and collection, keyboards, `feedback_tap`, session state |
-| `tg.py` | Telegram Bot API send side only: `sendMessage`, `sendPoll`, `stopPoll` (to `TELEGRAM_CHAT_ID`) |
+| `tg.py` | Telegram Bot API send side only: `sendMessage`, `sendPoll`, `stopPoll`, `setChatMenuButton` (to `TELEGRAM_CHAT_ID`) |
+| `cache.py` | Mix cache (24 h) and karaoke-track cache (30 days) in `STATE_ROOT/cache` |
+| `locks.py` | One lock for every wiki/state write, across threads and processes (`fcntl.flock` on `STATE_ROOT/wiki.lock`), so the agent and the app never lose each other's writes |
+| `appstart.py` | `open_app`: start codes and the 🎵 Open button |
+| `app/` | The Mini App: FastAPI server (`main.py`, `auth.py`, `similar.py`, `jobs.py`) and the static front end (`static/`) |
+| `setup_menu_button.py` | Sets the bot's menu button to open the app |
+| `launchd/com.bishpaul.karaoke-app.plist` | Keeps the app server running |
 | `migrate.py` | One-time songs.csv upgrade (adds `my_rating`, `rated_on`) |
 | `common.py` | Env config, result shape, path and URL checks |
 | `try_tool.py` | CLI: run any tool outside MCP |
@@ -624,8 +630,9 @@ into the ranking:
 | `plan` | several `references` (a set being planned) | as `like` |
 
 1. **Resolve the reference.** A `song_id` or a title (fuzzy, ≥ 90), or a
-   YouTube `url`. A catalog reference with a `karaoke_url` seeds the mix from
-   that video.
+   YouTube `url`. The mix is seeded from the song's **original** video
+   (title + film), which gives better variety than a karaoke seed, and cached
+   per seed for 24 h in `STATE_ROOT/cache/mix/`.
 2. **Collect candidates.** `youtube_mix(source="both", limit=40)` per
    reference (not for `next`): its `in_catalog` matches become catalog
    candidates, the rest outside candidates (jukebox and "other" skipped).
@@ -676,13 +683,27 @@ into the ranking:
 | `same_era` | `1` | same era as a reference (or a query era word) |
 | `tempo_or_energy_within_1` | `1` | same tempo_class, or energy within 1 |
 | `same_mood` | `1` | a mood in common |
-| `relation` | `{per_up: 2, per_down: -2, cap: 6, half_life_days: 180}` | Σ per_up/per_down × 0.5^(age_days / half_life_days) over `relations.csv` rows for (reference, song), capped at ±cap |
+| `like_link` | `3` | the reference and the song are liked together (♥ in the Mini App; older 👍 rows count too). The latest like/unlike row for the pair wins; used both ways ("A is like B" = "B is like A"), except in `after` mode |
+| `down_penalty` | `-1` | per older 👎 row for the pair, × 0.5^(age_days / half_life_days) |
+| `relation` | `{cap: 6, half_life_days: 180}` | the 👎 penalty fades with this half-life and is capped at −cap |
 | `rating` | `{"9-10": 3, "7-8": 2, "5-6": 0, "3-4": -1, "1-2": -3}` | by `my_rating` |
 | `max_per_singer` | `3` | catalog songs per singer per list (0 = no cap) |
 | `exclude_rating_at_or_below_in_plans` | `2` | plans drop songs rated this low |
 
 `reasons` names the parts that applied, for example `mix #2 · both · ready ·
-⭐9 · 👍×2 after this`.
+⭐9 · ♥ liked · 👎×1`.
+
+**Karaoke tracks for outside songs.** Each outside song on a page gets its
+karaoke track: from the mix when it had one, else `karaoke_find` (Anil Chauhan
+index first, then a YouTube search), accepted at score ≥ 85 when it's from the
+index or has "karaoke" in the title. Lookups run 4 at a time and are cached
+30 days per normalised title in `STATE_ROOT/cache/karaoke/` (a "none" answer
+too; errors aren't cached). No match: `karaoke: "none"`, and the original
+video stays in `video_url`.
+
+**Rating drives status.** Setting or changing `my_rating` sets `status`:
+6–10 → `ready`, 1–5 → `practicing`. Clearing a rating leaves status alone,
+and a status set by hand stands until the next rating change.
 
 **`suggest_more()`** returns the next page of the last list (numbers continue,
 e.g. 21–40). It makes no new YouTube calls and also sends polls (or buttons)
@@ -789,6 +810,157 @@ Session state lives in `STATE_ROOT`, outside the repo.
 and `rated_on` columns and changes nothing else; running it again does
 nothing. Until then, catalog tools return `schema_mismatch` with this hint.
 
+## Mini App
+
+A Telegram Mini App inside the KaraokeGayak bot for anything with lists and
+taps: Suggest Similar, ♥ likes, ⭐ ratings, editing and adding songs. The chat
+stays for natural requests. Spec: `docs/mini-app-spec-v1.md` (Phase 1 =
+Suggest Similar; the Event Planner comes later).
+
+The app server (`app/`) imports the same modules as the MCP server
+(catalog, suggest, feedback, youtube, cache), so the chat and the app always
+agree, and both write through the same lock (`locks.py`).
+
+### How it fits together
+
+```
+phone (Telegram) ──https──▶ Tailscale Funnel ──▶ 127.0.0.1:8765  app server (launchd)
+                                                    │ FastAPI + static front end
+                                                    └─ catalog / suggest / feedback / youtube
+chat agent (Hermes) ── open_app ──▶ "Similar to X  [🎵 Open]"  (web_app button)
+```
+
+- **Opening it.** Telegram only opens a Mini App on a tap. The agent calls
+  `open_app(view="similar", seed="Pal Pal Dil Ke Paas")` (or `url=` a YouTube
+  link, or `view="home"`). It stores the request under an 11-character
+  URL-safe start code in `STATE_ROOT/app_start_codes.json` (expires after 7
+  days) and sends one line with a **🎵 Open** `web_app` button →
+  `APP_URL/?start=<code>`. Returns `{sent, code}`. The bot's **menu button**
+  (bottom-left) opens the app's Home: search plus recent seeds.
+- **Login.** Every `/api/*` call carries Telegram's signed `initData` in
+  `X-Telegram-Init-Data`. The server checks the HMAC (secret =
+  HMAC_SHA256("WebAppData", bot token)), rejects `auth_date` older than 24 h,
+  and accepts only `user.id == TELEGRAM_CHAT_ID`; anything else is 401. A
+  normal browser gets the page but no data. The static files hold no data.
+- **Safety.** App actions only: read the catalog, suggest, like, rate, edit
+  through `catalog_upsert` (validation and `log.md` apply), add a song,
+  re-analyse. No shell, no file paths, and no URL fetching except YouTube
+  (yt-dlp, oEmbed) plus the add pipeline's Wikipedia lookup and the existing
+  lyrics allowlist. The edit API accepts only the editable columns, and
+  YouTube links only. The server binds 127.0.0.1; Funnel is the only way in.
+- **Bot API.** Sending messages and setting the menu button only. **Never
+  getUpdates or a webhook**: the Hermes gateway owns the bot's updates. A
+  `web_app` button sends no update to the bot, so Hermes never sees it.
+
+### What the app does
+
+- **Suggest Similar.** "From your catalog" appears at once (catalog ranking
+  without the mix). The YouTube Mix (seeded from the original song) loads in
+  the background: a few seconds, then both sections refresh. Outside songs
+  show their karaoke track ("no karaoke track" when none is found). 10 + 10
+  per page with Next/Previous; "No more catalog matches" / "End of YouTube
+  Mix" at the ends. Re-opening a seed within 24 h is instant.
+- **Each row:** the title opens the player (karaoke track, an **Original**
+  tab, fullscreen; **Open in YouTube** when the uploader blocks embedding,
+  i.e. player error 101/150 or oEmbed 401). Below it: film · year · singer, a
+  status badge, an energy bar and tempo. Then ♥, ⭐ (1–10 wheel with Clear),
+  ↪ Similar (drill down; the native Back button returns with results and
+  scroll position, and a breadcrumb shows the path), ✎ Edit, and ⓘ Why (the
+  ranking reasons).
+- **♥** links the page's seed and the song (`like`/`unlike` rows in
+  `relations.csv`, append-only; tap again to unlike). A YouTube Mix song is
+  stored as `yt:<video id>` and moves to its `song_id` when it's added.
+- **⭐** saves at once and drives status (6–10 ready, 1–5 practicing). Rating
+  a YouTube Mix song asks "Add to catalog?", then runs the add pipeline in
+  the background ("adding…" badge, about a minute).
+- **Like and rating autosave** with a "Saved ✓ · Undo" toast. The edit
+  sheet has an explicit Save, chips limited to SCHEMA.md values, **Find**
+  for the karaoke link (Anil Chauhan first), **Re-analyse**, and field errors
+  shown inline.
+- **Adding a song** (job): Wikipedia year/music director, karaoke track,
+  `catalog_upsert` (with the rating), relations rekeyed, audio analysis
+  (bpm, key, energy, duration), lyrics. It can't tag genre / mood / theme /
+  situation / tempo_class (that needs the agent), so the song gets
+  `needs_review` and a review.csv row ("Added from the Mini App: … not tagged
+  yet"). Ask the agent to "tag the songs added from the app".
+- **Done** (and, best effort, hiding the app) sends one line to the chat,
+  e.g. *Saved 4 likes, 2 ratings, 1 song added (similar to Pal Pal Dil Ke
+  Paas)*. Only what's new since the last summary; nothing saved, no message.
+
+### API
+
+All under `/api`, all need `X-Telegram-Init-Data`; `X-App-Session` (a random
+id per app open) groups activity for the close summary.
+
+| Endpoint | What |
+|---|---|
+| `GET /start/{code}` | `{view, seed, url}` for a start code (404 when expired) |
+| `GET /home` | recent seeds |
+| `GET /search?q=` | catalog matches (or `{url}` for a YouTube link) |
+| `GET /similar?seed=&url=&page=` | seed, catalog page at once, `mix: loading/done/error`, outside page when ready |
+| `GET /similar/mix?session=&page=` | waits up to 20 s for the mix, then the outside page and the re-ranked catalog page |
+| `POST /like` | `{seed_key, song_key, liked}` |
+| `POST /rating` | `{song_key, rating\|null}` → new rating and status, or `needs_add` for an outside song |
+| `GET /song/{key}` | the row (or a draft for `yt:` keys) |
+| `PUT /song/{key}` | `{fields}` → saved row, or 422 with `field_errors` |
+| `POST /song/add` | `{song_key, fields, rating}` → `job_id` (fields validated first) |
+| `GET /jobs/{id}` | job status and steps |
+| `POST /song/{key}/reanalyse` | re-analyse from the karaoke link → `job_id` |
+| `GET /karaoke/find?title=&film=` | karaoke candidates for the edit sheet |
+| `GET /embeddable?url=` | oEmbed check (false = embedding blocked) |
+| `GET /original?title=&film=` | the original video, for the player's Original tab |
+| `POST /session/close` | sends the one-line summary |
+| `GET /vocab` | allowed values for the edit sheet |
+
+### Setup
+
+1. **Dependencies.** `venv/bin/pip install -r requirements.txt` (adds
+   fastapi and uvicorn; both install from wheels on an Intel Mac).
+2. **Run it once by hand** to check: `venv/bin/python -m app` from this folder
+   (binds 127.0.0.1:8765; `APP_PORT` changes the port). It reads
+   `TELEGRAM_BOT_TOKEN` and `TELEGRAM_HOME_CHANNEL` (as the chat id) from the
+   Hermes profile's `.env` (`KARAOKE_APP_ENV_FILES`), so the token is never
+   copied into the plist. Only known keys are read, and the process env wins.
+   Opening http://127.0.0.1:8765 in a desktop browser should say "Open
+   KaraokeGayak from Telegram", and `curl -i http://127.0.0.1:8765/api/home`
+   should return 401.
+3. **Tailscale Funnel** (public https address; free). From Tailscale's docs
+   (kb/1223/funnel, kb/1311/tailscale-funnel, checked 2026-11-05):
+   1. Install the Tailscale Mac app and sign in. The App Store and Standalone
+      variants both support Funnel port forwarding (serving files needs the
+      open-source variant; we only forward a port). Turn on the CLI in the
+      app's settings, or use
+      `/Applications/Tailscale.app/Contents/MacOS/Tailscale` as `tailscale`.
+   2. Needs Tailscale 1.38.3+, MagicDNS and HTTPS certificates on the tailnet,
+      and the `funnel` node attribute in the policy file. The first
+      `tailscale funnel` run opens a page that turns these on for you.
+   3. `tailscale funnel --bg 8765` serves https://*machine*.*tailnet*.ts.net
+      (port 443) → 127.0.0.1:8765, and keeps running in the background across
+      restarts. Only ports 443, 8443 and 10000 can be public.
+   4. `tailscale funnel status` shows the URL. To stop: `tailscale funnel
+      --https=443 off`, or `tailscale funnel reset`.
+   5. Public DNS for the name can take a few minutes the first time.
+4. **APP_URL.** Put the Funnel URL in the plist's `APP_URL` and in the
+   karaoke_tools `env:` block of the Hermes config (for `open_app`).
+5. **launchd.**
+   ```
+   mkdir -p ~/.hermes/profiles/karaoke-gayak/logs
+   cp launchd/com.bishpaul.karaoke-app.plist ~/Library/LaunchAgents/
+   launchctl load ~/Library/LaunchAgents/com.bishpaul.karaoke-app.plist
+   ```
+   Logs: `~/.hermes/profiles/karaoke-gayak/logs/karaoke-app*.log`. After a code
+   change: `launchctl stop com.bishpaul.karaoke-app` (KeepAlive starts it again).
+6. **Menu button.** `venv/bin/python setup_menu_button.py` (again whenever
+   APP_URL changes).
+7. **Keep the Mac awake.** The app (and the bot) only work while the Mac is
+   awake: System Settings → Battery/Energy → "Prevent automatic sleeping when
+   the display is off" (on power), or `caffeinate -s` while plugged in. If the
+   app server is down, the chat still works.
+8. **Try it.** Tap the menu button in the chat, or from the CLI:
+   `venv/bin/python try_tool.py open_app '{"view": "similar", "seed": "Pal Pal Dil Ke Paas"}'`
+   (with `APP_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` set) and tap
+   **🎵 Open**.
+
 ## Environment variables
 
 See `.env.example`. Hermes sets these in the `env:` block of `config.yaml`;
@@ -810,7 +982,8 @@ the server does not read a `.env` file.
 | `TELEGRAM_CHAT_ID` | unset | The only allowed destination: Neel's Telegram user id (DM chat id). `"${TELEGRAM_HOME_CHANNEL}"` in this profile. |
 | `FEEDBACK_MODE` | `poll` | `poll`: 👍/👎 multi-select polls collected with stopPoll; `keyboard`: the older per-song reply keyboard; `off`: no feedback UI is sent (typed `fb 1👍` / `rate 3 9` still work) |
 | `BUTTON_MODE` | `reply` | `reply` keyboard; `inline` is refused (Hermes drops unknown inline taps) |
-| `STATE_ROOT` | `~/.hermes/profiles/karaoke-gayak/state` | Session state (last suggestion lists, pending ratings) |
+| `STATE_ROOT` | `~/.hermes/profiles/karaoke-gayak/state` | Session state (last suggestion lists, pending ratings), caches, start codes, the write lock |
+| `APP_URL` | unset | The Mini App's https address (Tailscale Funnel), for `open_app` and the menu button |
 
 ## Install (Intel Mac)
 
@@ -875,6 +1048,14 @@ of the real `SCHEMA.md` and the empty skeleton. The tests cover:
   and the Wikipedia section and infobox parsing.
 - **Karaoke matching:** title normalisation and index matching.
 - **Telegram:** chunking.
+- **Mini App (`test_app.py`):** initData valid / tampered / expired / wrong
+  user, the 401 guard on every endpoint, start codes and `open_app` (allowed
+  chat only, a `web_app` button), the menu button, rating → status, like /
+  unlike and old 👍 rows, the fading 👎 penalty, edit field errors, the add
+  job (mocked pipeline), Suggest Similar with a fake mix, karaoke resolution
+  (index, search, none, cache), the one-line close summary, and that no code
+  calls getUpdates or setWebhook.
+- **Lock (`test_locks.py`):** two processes adding songs at once lose nothing.
 - **MCP:** a protocol round trip over stdio with launchd's minimal PATH.
 
 **When SCHEMA.md changes:** copy it to `tests/fixtures/wiki/SCHEMA.md` and run
@@ -905,7 +1086,7 @@ npx @modelcontextprotocol/inspector \
   venv/bin/python server.py
 ```
 
-Add `--cli --method tools/list` to list the 32 tools in the terminal instead of
+Add `--cli --method tools/list` to list the 33 tools in the terminal instead of
 the browser.
 
 ## Wiring into Hermes
@@ -934,6 +1115,7 @@ mcp_servers:
       FEEDBACK_MODE: "poll"
       BUTTON_MODE: "reply"
       STATE_ROOT: "/Users/bishpaul/.hermes/profiles/karaoke-gayak/state"
+      APP_URL: "https://<machine>.<tailnet>.ts.net"   # for open_app
 ```
 
 Use the venv's own `python` and absolute paths everywhere. Hermes runs under

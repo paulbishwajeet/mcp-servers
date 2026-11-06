@@ -21,7 +21,7 @@ REVIEW_COLUMNS = ["logged_at", "song_id", "source_ref", "problem", "details", "r
 
 RELATION_COLUMNS = ["logged_at", "reference_key", "reference_title", "song_key", "song_title",
                     "verdict", "request_type", "request_text"]
-VERDICT = ["up", "down"]
+VERDICT = ["up", "down", "like", "unlike"]
 REQUEST_TYPE = ["like", "after", "next", "plan"]
 
 INDEX_COLUMNS = ["video_id", "title", "url", "duration_sec", "indexed_on"]

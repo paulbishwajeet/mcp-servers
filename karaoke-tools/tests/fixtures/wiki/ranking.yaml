@@ -16,9 +16,14 @@ crowd_score: {gte_2_5: 2, gte_2_0: 1}
 same_era: 1
 tempo_or_energy_within_1: 1   # same tempo_class, or energy within 1
 same_mood: 1                  # at least one mood in common
-# 👍/👎 taps on this (reference, song) pair. Each tap counts per_up/per_down,
-# halved every half_life_days; the total is capped at ±cap.
-relation: {per_up: 2, per_down: -2, cap: 6, half_life_days: 180}
+# Older 👎 taps: down_penalty each, halved every half_life_days, total capped at
+# ±cap. (per_up/per_down from the chat polls are no longer used: 👍 rows count
+# as likes.)
+relation: {cap: 6, half_life_days: 180}
+# ♥ like links between a song and the seed (Mini App ♥, older 👍 rows). Used
+# both ways for similarity ("A is like B" = "B is like A"), directed for "after".
+like_link: 3
+down_penalty: -1
 # ⭐ my_rating bands (1-10).
 rating: {"9-10": 3, "7-8": 2, "5-6": 0, "3-4": -1, "1-2": -3}
 # At most this many catalog songs per singer in one list.

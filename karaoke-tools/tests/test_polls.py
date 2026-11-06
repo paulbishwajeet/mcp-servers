@@ -196,7 +196,7 @@ def test_suggest_collects_previous_polls_first(mix, telegram, wiki):
     assert [p["status"] for p in st["requests"][0]["polls"]] == ["closed", "closed"]
     assert [p["status"] for p in st["requests"][-1]["polls"]] == ["open", "open"]
     # The 👍 just collected already counts in the new ranking.
-    assert "👍×1" in r["items"][0]["reasons"]
+    assert "♥ liked" in r["items"][0]["reasons"]
 
 
 def test_polls_older_than_24h_collected_by_any_tool(mix, telegram, wiki):

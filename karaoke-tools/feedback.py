@@ -16,6 +16,7 @@ from datetime import date, datetime
 
 import catalog
 import tg
+import locks
 import vocab
 import youtube
 from common import fail, feedback_mode, log, ok, state_root
@@ -24,7 +25,7 @@ RELATIONS_REL = "feedback/relations.csv"
 STATE_FILE = "last_suggestions.json"
 KEEP_REQUESTS = 5
 MAIN_TEXT = "Rate these: 👍 fits · 👎 doesn't fit · ⭐ rate song"
-_lock = threading.RLock()
+_lock = locks.LOCK  # shared across threads and processes (locks.py)
 
 
 # --- session state --------------------------------------------------------------------
@@ -101,32 +102,66 @@ def _append_relation(row: dict) -> None:
         f.write(catalog.render_csv(vocab.RELATION_COLUMNS, [row]).split("\n", 1)[1])
 
 
-def relation_score(ref_keys: list[str] | str, song_key: str, rows: list[dict], cfg: dict,
-                   today: date | None = None) -> tuple[float, int, int]:
-    """Σ per_up/per_down × 0.5^(age_days/half_life_days) over the rows for
-    (reference, song), capped at ±cap. Returns (score, ups, downs)."""
-    keys = {ref_keys} if isinstance(ref_keys, str) else set(ref_keys)
-    today = today or date.today()
-    total, ups, downs = 0.0, 0, 0
-    half = float(cfg.get("half_life_days") or 0)
+LIKE_VERDICTS = {"like", "up"}  # older 👍 poll rows count as likes
+
+
+def _age_days(logged_at: str, today: date) -> int:
+    try:
+        return max(0, (today - datetime.fromisoformat(logged_at.replace(" ", "T")).date()).days)
+    except ValueError:
+        return 0
+
+
+def is_liked(a: str, b: str, rows: list[dict], both_ways: bool = True) -> bool:
+    """A pair is liked when its latest like/unlike/up row is a like. With
+    both_ways, "A is like B" also counts as "B is like A"."""
+    latest = None
     for r in rows:
-        if r["reference_key"] not in keys or r["song_key"] != song_key:
+        if r["verdict"] not in ("like", "unlike", "up"):
             continue
-        try:
-            age = (today - datetime.fromisoformat(r["logged_at"].replace(" ", "T")).date()).days
-        except ValueError:
-            age = 0
-        decay = 0.5 ** (max(0, age) / half) if half > 0 else 1.0
-        if r["verdict"] == "up":
-            total += cfg["per_up"] * decay
-            ups += 1
-        elif r["verdict"] == "down":
-            total += cfg["per_down"] * decay
+        fwd = r["reference_key"] == a and r["song_key"] == b
+        back = both_ways and r["reference_key"] == b and r["song_key"] == a
+        if (fwd or back) and (latest is None or r["logged_at"] >= latest["logged_at"]):
+            latest = r
+    return bool(latest) and latest["verdict"] in LIKE_VERDICTS
+
+
+def link_score(ref_keys, song_key: str, rows: list[dict], W: dict, both_ways: bool = True,
+               today: date | None = None) -> tuple[float, bool, int]:
+    """like_link if any reference is liked with the song; plus down_penalty ×
+    0.5^(age/half_life) per older 👎 row (capped at ±relation.cap).
+    Returns (points, liked, downs)."""
+    keys = [ref_keys] if isinstance(ref_keys, str) else list(ref_keys)
+    today = today or date.today()
+    liked = any(is_liked(k, song_key, rows, both_ways) for k in keys)
+    half = float(W["relation"].get("half_life_days") or 0)
+    pen, downs = 0.0, 0
+    for r in rows:
+        if r["verdict"] != "down":
+            continue
+        fwd = r["reference_key"] in keys and r["song_key"] == song_key
+        back = both_ways and r["song_key"] in keys and r["reference_key"] == song_key
+        if fwd or back:
             downs += 1
-    cap = float(cfg.get("cap") or 0)
+            pen += W["down_penalty"] * (0.5 ** (_age_days(r["logged_at"], today) / half) if half > 0 else 1.0)
+    cap = float(W["relation"].get("cap") or 0)
     if cap:
-        total = max(-cap, min(cap, total))
-    return round(total, 2), ups, downs
+        pen = max(-cap, pen)
+    return round((W["like_link"] if liked else 0) + pen, 2), liked, downs
+
+
+def set_like(seed_key: str, song_key: str, liked: bool, seed_title: str = "",
+             song_title: str = "", request_type: str = "like", request_text: str = "app") -> dict:
+    """♥ / un-♥ from the Mini App: an append-only like or unlike row."""
+    if not seed_key or not song_key or seed_key == song_key:
+        return fail("invalid_input", "seed_key and song_key are required and must differ.")
+    with _lock:
+        _append_relation({"logged_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                          "reference_key": seed_key, "reference_title": seed_title,
+                          "song_key": song_key, "song_title": song_title,
+                          "verdict": "like" if liked else "unlike",
+                          "request_type": request_type, "request_text": request_text})
+    return ok(seed_key=seed_key, song_key=song_key, liked=bool(liked))
 
 
 def record_relation(req: dict, n: int, verdict: str) -> str:
@@ -633,7 +668,7 @@ def relations_for(ref: str, limit: int = 10) -> dict:
             return fail("not_found", f"No catalog song matches '{ref}'.", matches=g.get("matches", []))
         key, title = best["song_id"], best["title"]
     import suggest
-    cfg = suggest.load_weights()[0]["relation"]
+    W = suggest.load_weights()[0]
     rows = load_relations()
     pairs = {}
     for r in rows:
@@ -644,9 +679,9 @@ def relations_for(ref: str, limit: int = 10) -> dict:
     out = {"after": [], "before": []}
     for (direction, other), other_title in pairs.items():
         ref_k, song_k = (key, other) if direction == "after" else (other, key)
-        score, ups, downs = relation_score(ref_k, song_k, rows, cfg)
+        score, liked, downs = link_score(ref_k, song_k, rows, W, both_ways=False)
         out[direction].append({"song_key": other, "title": other_title, "score": score,
-                               "ups": ups, "downs": downs})
+                               "liked": liked, "downs": downs})
     for d in out:
         out[d].sort(key=lambda x: -abs(x["score"]))
         out[d] = out[d][:limit]

@@ -13,6 +13,7 @@ import uuid
 from datetime import date, datetime
 from pathlib import Path
 
+import cache
 import catalog
 import feedback
 import vocab
@@ -30,7 +31,9 @@ DEFAULT_WEIGHTS = {
     "same_era": 1,
     "tempo_or_energy_within_1": 1,
     "same_mood": 1,
-    "relation": {"per_up": 2, "per_down": -2, "cap": 6, "half_life_days": 180},
+    "relation": {"cap": 6, "half_life_days": 180},
+    "like_link": 3,
+    "down_penalty": -1,
     "rating": {"9-10": 3, "7-8": 2, "5-6": 0, "3-4": -1, "1-2": -3},
     "max_per_singer": 3,
     "exclude_rating_at_or_below_in_plans": 2,
@@ -148,13 +151,21 @@ def _karaoke_video(entry: dict) -> str:
     return next((v["url"] for v in entry.get("videos", []) if v["kind"] == "karaoke"), "")
 
 
-def _collect_mix(ref: dict, url: str, cands: dict, mix_index: int) -> tuple[str, str]:
-    """Run youtube_mix for one reference and fold its entries into cands.
-    Returns (seed key, warning)."""
+def fetch_mix(ref: dict, url: str = "", cached_only: bool = False) -> dict | None:
+    """The YouTube Mix for a reference, seeded from the **original** song video
+    (better variety than a karaoke seed), cached per seed for 24 h. A url seeds
+    from that video instead. cached_only: None unless it's in the cache."""
     row = ref["row"]
-    seed_url = url or (row["karaoke_url"] if row and row["karaoke_url"] else "")
-    mix = youtube.youtube_mix(song=ref["title"] if not seed_url else "", url=seed_url,
-                              source="both", limit=MIX_LIMIT)
+    return cache.mix(song="" if url else ref["title"], url=url, seed="original", source="both",
+                     limit=MIX_LIMIT, film=(row["film"] if row else ""), cached_only=cached_only)
+
+
+def _collect_mix(ref: dict, url: str, cands: dict, mix_index: int,
+                 mix: dict | None = None) -> tuple[str, str]:
+    """Fold one reference's YouTube Mix into cands (fetching it unless given).
+    Returns (seed key, warning)."""
+    if mix is None:
+        mix = fetch_mix(ref, url)
     if not mix.get("success"):
         return "", "YouTube Mix unavailable"
     seed_key = "yt:" + mix["seed"]["video_id"]
@@ -259,14 +270,14 @@ def score_candidate(c: dict, row: dict | None, W: dict, ref_keys: list[str], ref
     else:
         pts += W["status"].get("outside", 0)
         why.append("outside")
-    rel, ups, downs = feedback.relation_score(ref_keys, c["key"], rel_rows, W["relation"], today)
-    if ups or downs:
-        pts += rel
-        word = RELATION_WORD.get(request_type, "")
-        if ups:
-            why.append(f"👍×{ups} {word}")
-        if downs:
-            why.append(f"👎×{downs} {word}")
+    # Likes are similarity links, used both ways; "after" stays directed.
+    rel, liked, downs = feedback.link_score(ref_keys, c["key"], rel_rows, W,
+                                            both_ways=request_type != "after", today=today)
+    pts += rel
+    if liked:
+        why.append("♥ liked" + (" after this" if request_type == "after" else ""))
+    if downs:
+        why.append(f"👎×{downs}")
     return round(pts, 2), why
 
 
@@ -278,7 +289,8 @@ def _item(c: dict, row: dict | None, score: float, why: list[str]) -> dict:
                 "film": row["film"], "year": row["year"], "singers": row["singers"],
                 "tempo_class": row["tempo_class"], "energy": row["energy"], "status": row["status"],
                 "my_rating": row["my_rating"], "my_key_change": row["my_key_change"],
-                "karaoke_url": row["karaoke_url"], "score": score, "reasons": " · ".join(why)}
+                "karaoke_url": row["karaoke_url"], "video_url": c.get("video_url", ""),
+                "score": score, "reasons": " · ".join(why)}
     return {"group": "outside", "song_key": c["key"], "title": c["title"], "film": c["film"],
             "year": "", "singers": "", "tempo_class": "", "energy": "", "status": "",
             "my_rating": "", "my_key_change": "", "karaoke_url": c.get("karaoke_url", ""),
@@ -290,15 +302,23 @@ def _norm(t: str) -> str:
 
 
 def rank(mode: str, refs: list[dict], urls: list[str], query: str, exclude: list[str],
-         rel_rows: list[dict], W: dict) -> dict:
-    """Build and score candidates. Returns {catalog, outside, ref_keys, warnings}."""
+         rel_rows: list[dict], W: dict, mixes: list | None = None, use_mix: bool = True) -> dict:
+    """Build and score candidates. Returns {catalog, outside, ref_keys, warnings}.
+    mixes: already-fetched youtube_mix results, one per reference (the app passes
+    them); use_mix=False ranks the catalog without any mix (the app's instant
+    first pass while the mix loads)."""
     songs = catalog.load_songs()
     by_id = {r["song_id"]: r for r in songs}
     cands: dict[str, dict] = {}
     warnings, ref_keys = [], []
     if mode != "next":
         for i, ref in enumerate(refs):
-            seed_key, warn = _collect_mix(ref, urls[i] if i < len(urls) else "", cands, i)
+            if not use_mix:
+                if ref["key"]:
+                    ref_keys.append(ref["key"])
+                continue
+            given = mixes[i] if mixes and i < len(mixes) else None
+            seed_key, warn = _collect_mix(ref, urls[i] if i < len(urls) else "", cands, i, given)
             if warn and warn not in warnings:
                 warnings.append(warn)
             if not ref["key"]:
@@ -356,15 +376,18 @@ def rank(mode: str, refs: list[dict], urls: list[str], query: str, exclude: list
 
 
 def _fill_karaoke(items: list[dict]) -> None:
-    """Outside items on the page: a karaoke link via karaoke_find when the mix
-    didn't already offer one."""
+    """Outside items on the page get a karaoke track: from the mix when it had
+    one, else cache.karaoke_many (channel index, then search; parallel, cached
+    30 days). No match: karaoke_url "" and karaoke "none". The original video
+    stays in video_url."""
+    need = [it for it in items if it["group"] == "outside" and not it["karaoke_url"]]
+    for it, track in zip(need, cache.karaoke_many([(it["title"], it["film"]) for it in need])):
+        if track:
+            it["karaoke_url"], it["karaoke_title"] = track["url"], track["title"]
+            it["karaoke_channel"] = track["channel"]
     for it in items:
-        if it["group"] != "outside" or it["karaoke_url"]:
-            continue
-        r = youtube.karaoke_find(it["title"], it["film"])
-        best = (r.get("candidates") or [None])[0] if r.get("success") else None
-        it["karaoke_url"] = best["url"] if best and best["score"] >= youtube.STRONG_INDEX_SCORE \
-            else "no karaoke track found"
+        if it["group"] == "outside":
+            it["karaoke"] = "found" if it["karaoke_url"] else "none"
 
 
 def page(req: dict) -> list[dict]:

@@ -76,8 +76,9 @@ def mix(songs, monkeypatch):
     ]
     calls = []
 
-    def fake_mix(song="", url="", seed="karaoke", source="youtube", limit=25):
-        calls.append({"song": song, "url": url, "source": source, "limit": limit})
+    def fake_mix(song="", url="", seed="karaoke", source="youtube", limit=25, film=""):
+        calls.append({"song": song, "url": url, "seed": seed, "source": source, "limit": limit,
+                      "film": film})
         return {"success": True, "seed": {"video_id": "pw6r-izZArA", "title": "Pal Pal Karaoke",
                                           "song_title": "Pal Pal Dil Ke Paas", "channel": "X", "url": url},
                 "entries": entries}
@@ -120,8 +121,9 @@ def test_rating_field_validation(wiki):
 def test_like_order_reasons_and_exclusions(mix, telegram):
     r = suggest.suggest(mode="like", reference="Pal Pal Dil Ke Paas", send_buttons=False)
     assert r["success"], r
-    assert mix[0]["url"] == "https://www.youtube.com/watch?v=pw6r-izZArA"  # seeded from its karaoke
-    assert mix[0]["source"] == "both" and mix[0]["limit"] == 40
+    # Seeded from the original song (title + film to find it), not its karaoke.
+    assert mix[0] == {"song": "Pal Pal Dil Ke Paas", "url": "", "seed": "original",
+                      "source": "both", "limit": 40, "film": "Blackmail"}
     cat = [i for i in r["items"] if i["group"] == "catalog"]
     out = [i for i in r["items"] if i["group"] == "outside"]
     titles = [i["title"] for i in cat]
@@ -163,19 +165,27 @@ def test_rating_bands(rating, points):
     assert suggest.rating_points(rating, suggest.DEFAULT_WEIGHTS["rating"]) == points
 
 
-def test_relation_decay_and_cap():
-    cfg = suggest.DEFAULT_WEIGHTS["relation"]
+def test_like_links_down_penalty_decay_and_cap():
+    W = suggest.DEFAULT_WEIGHTS
     today = date(2026, 11, 4)
 
-    def row(days_ago, verdict="up"):
+    def row(days_ago, verdict="like", ref="ref", song="song"):
         return {"logged_at": (today - timedelta(days=days_ago)).isoformat() + " 10:00:00",
-                "reference_key": "ref", "song_key": "song", "verdict": verdict}
-    assert feedback.relation_score("ref", "song", [row(0)], cfg, today) == (2.0, 1, 0)
-    assert feedback.relation_score("ref", "song", [row(180)], cfg, today)[0] == 1.0  # one half-life
-    assert feedback.relation_score("ref", "song", [row(360, "down")], cfg, today)[0] == -0.5
-    assert feedback.relation_score("ref", "song", [row(0)] * 5, cfg, today) == (6.0, 5, 0)  # cap
-    assert feedback.relation_score("ref", "song", [row(0, "down")] * 5, cfg, today)[0] == -6.0
-    assert feedback.relation_score("other", "song", [row(0)], cfg, today) == (0.0, 0, 0)
+                "reference_key": ref, "song_key": song, "verdict": verdict}
+    assert feedback.link_score("ref", "song", [row(0)], W, today=today) == (3, True, 0)
+    assert feedback.link_score("ref", "song", [row(0, "up")], W, today=today)[1] is True  # old 👍
+    # Latest row wins: liked, then un-liked.
+    assert feedback.link_score("ref", "song", [row(5), row(1, "unlike")], W, today=today)[1] is False
+    assert feedback.link_score("ref", "song", [row(5, "unlike"), row(1)], W, today=today)[1] is True
+    # Both directions for similarity, directed for "after".
+    back = [row(0, ref="song", song="ref")]
+    assert feedback.link_score("ref", "song", back, W, today=today)[1] is True
+    assert feedback.link_score("ref", "song", back, W, both_ways=False, today=today)[1] is False
+    # 👎: -1 each, halved per half-life, capped at -cap.
+    assert feedback.link_score("ref", "song", [row(0, "down")], W, today=today)[0] == -1.0
+    assert feedback.link_score("ref", "song", [row(180, "down")], W, today=today)[0] == -0.5
+    assert feedback.link_score("ref", "song", [row(0, "down")] * 9, W, today=today)[0] == -6.0
+    assert feedback.link_score("other", "song", [row(0)], W, today=today) == (0, False, 0)
 
 
 def test_relations_change_the_order(mix, songs, wiki, telegram):
@@ -186,8 +196,8 @@ def test_relations_change_the_order(mix, songs, wiki, telegram):
                                    "request_type": "after", "request_text": "Pal Pal Dil Ke Paas"})
     r = suggest.suggest(mode="after", reference="Pal Pal Dil Ke Paas", send_buttons=False)
     first = r["items"][0]
-    assert first["title"] == "Yeh Shaam Mastani" and first["score"] == 16  # 10 + capped 6
-    assert first["reasons"].endswith("👍×3 after this")
+    assert first["title"] == "Yeh Shaam Mastani" and first["score"] == 13  # 10 + like_link 3
+    assert first["reasons"].endswith("♥ liked after this")
 
 
 def test_next_uses_query_and_no_youtube(songs, monkeypatch, telegram):

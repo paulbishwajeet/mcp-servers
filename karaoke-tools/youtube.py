@@ -802,7 +802,7 @@ def _same_song(a: str, b: str) -> bool:
     return max(match_score(a, nb), match_score(b, na)) >= SAME_SONG_SCORE
 
 
-def _find_seed(song: str, url: str, seed: str) -> tuple[dict | None, dict | None]:
+def _find_seed(song: str, url: str, seed: str, film: str = "") -> tuple[dict | None, dict | None]:
     """Return (seed dict, None) or (None, fail-result)."""
     if url:
         clean, err = _check_video_url(url)
@@ -815,7 +815,8 @@ def _find_seed(song: str, url: str, seed: str) -> tuple[dict | None, dict | None
         # karaoke_find's index match on short titles ("Tum Hi Ho"), and a karaoke
         # seed gives a mix of karaoke tracks.
         try:
-            info = _extract(f"ytsearch5:{song} karaoke", _base_opts() | {"extract_flat": True,
+            info = _extract(f"ytsearch5:{' '.join(p for p in (song, film) if p)} karaoke",
+                            _base_opts() | {"extract_flat": True,
                                                                         "noplaylist": False})
         except Exception as e:
             return None, fail(classify_error(str(e)), str(e))
@@ -842,7 +843,9 @@ def _find_seed(song: str, url: str, seed: str) -> tuple[dict | None, dict | None
         pool.sort(key=lambda x: (x[0], x[1]))
         return pool[0][2], None
     try:
-        info = _extract(f"ytsearch5:{song} song", _base_opts() | {"extract_flat": True,
+        # The film disambiguates songs that share a title (1973 vs 2019 "Pal Pal").
+        info = _extract(f"ytsearch5:{' '.join(p for p in (song, film) if p)} song",
+                        _base_opts() | {"extract_flat": True,
                                                                   "noplaylist": False})
     except Exception as e:
         return None, fail(classify_error(str(e)), str(e))
@@ -880,7 +883,7 @@ def _fetch_mix(video_id: str, which: str, cap: int) -> tuple[list[dict], str]:
 
 
 def youtube_mix(song: str = "", url: str = "", seed: str = "karaoke", source: str = "youtube",
-                limit: int = 25) -> dict:
+                limit: int = 25, film: str = "") -> dict:
     song, url = (song or "").strip(), (url or "").strip()
     seed, source = (seed or "karaoke").strip().lower(), (source or "youtube").strip().lower()
     if not song and not url:
@@ -894,7 +897,7 @@ def youtube_mix(song: str = "", url: str = "", seed: str = "karaoke", source: st
     except (TypeError, ValueError):
         return fail("invalid_input", "limit must be a whole number.")
 
-    seed_info, err = _find_seed(song, url, seed)
+    seed_info, err = _find_seed(song, url, seed, (film or "").strip())
     if err:
         return err
     sid = seed_info["video_id"]

@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- KaraokeGayak Mini App server (karaoke-tools/app), 127.0.0.1:8765.
+     No secrets here: the bot token is read at start from the Hermes profile's
+     .env (KARAOKE_APP_ENV_FILES). Install:
+       cp launchd/com.bishpaul.karaoke-app.plist ~/Library/LaunchAgents/
+       launchctl load ~/Library/LaunchAgents/com.bishpaul.karaoke-app.plist -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.bishpaul.karaoke-app</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/bishpaul/workspace/github/mcp-servers/karaoke-tools/venv/bin/python</string>
+    <string>-m</string>
+    <string>app</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/bishpaul/workspace/github/mcp-servers/karaoke-tools</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/bishpaul/.local/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>WIKI_ROOT</key>
+    <string>/Users/bishpaul/.hermes/profiles/karaoke-gayak/karaoke-gayak-wiki</string>
+    <key>STATE_ROOT</key>
+    <string>/Users/bishpaul/.hermes/profiles/karaoke-gayak/state</string>
+    <key>MEDIA_ROOT</key>
+    <string>/Users/bishpaul/.hermes/profiles/karaoke-gayak/media-tmp</string>
+    <key>FFMPEG_PATH</key>
+    <string>/usr/local/bin/ffmpeg</string>
+    <key>YTDLP_JS_RUNTIME</key>
+    <string>node:/Users/bishpaul/.local/bin/node</string>
+    <key>KARAOKE_APP_ENV_FILES</key>
+    <string>/Users/bishpaul/.hermes/profiles/karaoke-gayak/.env</string>
+    <key>APP_URL</key>
+    <string>https://CHANGE-ME.ts.net</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/bishpaul/.hermes/profiles/karaoke-gayak/logs/karaoke-app.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/bishpaul/.hermes/profiles/karaoke-gayak/logs/karaoke-app.err.log</string>
+</dict>
+</plist>

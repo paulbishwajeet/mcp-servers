@@ -104,6 +104,11 @@ def telegram_chat_id() -> str:
     return os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 
 
+def app_url() -> str:
+    """The Mini App's public https address (Tailscale Funnel), no trailing slash."""
+    return os.environ.get("APP_URL", "").strip().rstrip("/")
+
+
 FEEDBACK_MODES = ("poll", "keyboard", "off")
 
 

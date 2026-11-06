@@ -19,6 +19,7 @@ from pathlib import Path
 
 from rapidfuzz import fuzz, process
 
+import locks
 import vocab
 from common import PathError, SchemaError, fail, log, is_youtube_url, ok, resolve_inside, url_host, wiki_root
 
@@ -40,7 +41,7 @@ COMPACT_FIELDS = ["song_id", "title", "film", "year", "singers", "voice_type", "
 STATUS_RANK = {"ready": 0, "practicing": 1}
 
 # One lock for every read-modify-write: MCP may run sync tools in threads.
-_lock = threading.RLock()
+_lock = locks.LOCK  # shared across threads and processes (locks.py)
 
 
 # --- low-level file IO -----------------------------------------------------------
@@ -389,6 +390,14 @@ def catalog_upsert(row: dict) -> dict:
             if not _as_text(merged.get("status")):
                 added_from = _as_text(merged.get("added_from")).lower()
                 merged["status"] = "practicing" if added_from == "local-mp3" else "wishlist"
+
+        # The rating drives status: 6-10 = ready, 1-5 = practicing. Only when
+        # the rating is set or changed; clearing it leaves status alone, and a
+        # status set by hand stands until the next rating change.
+        new_rating = _as_text(row.get("my_rating")) if "my_rating" in row else None
+        old_rating = old["my_rating"] if action == "update" else ""
+        if new_rating and new_rating != old_rating and re.fullmatch(r"\d{1,2}", new_rating):
+            merged["status"] = "ready" if int(new_rating) >= 6 else "practicing"
 
         new_row, errors, vwarn = validate_row(merged)
         warnings += vwarn

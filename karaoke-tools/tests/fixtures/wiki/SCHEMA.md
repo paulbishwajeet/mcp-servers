@@ -61,7 +61,7 @@ This file defines the data format. Any agent or tool that reads or writes this r
 | notes | text | Neel's performance notes |
 | times_performed | int | From events |
 | crowd_score | number | Average outcome across events: standout = 3, good = 2, weak = 1 |
-| my_rating | int 1-10 | Neel's personal rating of the song, 10 = absolute favourite. Empty = unrated. |
+| my_rating | int 1-10 | Neel's personal rating of the song, 10 = favourite and most comfortable, 5 and below = needs practice. Empty = unrated. Setting it sets `status`: 6-10 = ready, 1-5 = practicing (clearing it leaves status alone). |
 | rated_on | date | When my_rating was last set |
 | last_performed | date | From events |
 | confidence | enum | `high`, `medium`, `low`: confidence in the song identification and metadata |
@@ -78,7 +78,7 @@ This file defines the data format. Any agent or tool that reads or writes this r
 
 `logged_at, reference_key, reference_title, song_key, song_title, verdict, request_type, request_text`
 - One row per 👍/👎 tap on a suggestion: is `song_key` a good pick after/with `reference_key`? It is about the pair, never about the song alone.
-- `verdict` is one of `up`, `down`.
+- `verdict` is one of `up`, `down`, `like`, `unlike`. `like`/`unlike` come from the Mini App's ♥: a pair is liked when its latest `like`/`unlike` row is `like` (older `up` rows count as likes). `up`/`down` are the older chat-poll feedback.
 - `request_type` is one of `like`, `after`, `next`, `plan`.
 - Keys: a catalog `song_id`; `yt:<video_id>` for a song outside the catalog (rewritten to its `song_id` when the song is added); `query:<words>` for a request with no reference song (lowercase words, sorted, stopwords removed, e.g. `query:old peppy`).
 - Append-only, except that a second tap on the same pair within the same request replaces the first.

@@ -2,7 +2,8 @@
 
 The Hermes gateway owns the bot's incoming updates. Calling getUpdates or
 setting a webhook from here would steal them, so this module can only call
-sendMessage, sendPoll and stopPoll, and only for TELEGRAM_CHAT_ID. Poll votes
+sendMessage, sendPoll, stopPoll and setChatMenuButton, and only for
+TELEGRAM_CHAT_ID. Poll votes
 are read by closing the poll (stopPoll returns the final counts), not from
 updates.
 
@@ -10,6 +11,8 @@ Buttons are a reply keyboard (BUTTON_MODE=reply): tapping a button sends its
 text as an ordinary message, which Hermes already delivers to the agent.
 Inline buttons don't work with Hermes: its callback_query handler silently
 drops callback_data it doesn't recognise, so BUTTON_MODE=inline is refused.
+The one inline button used is a web_app button (open_app): tapping it opens
+the Mini App inside Telegram and sends no update to the bot at all.
 """
 
 import re
@@ -19,7 +22,7 @@ import requests
 from common import button_mode, fail, log, ok, telegram_chat_id, telegram_token
 
 API = "https://api.telegram.org/bot{token}/{method}"
-ALLOWED_METHODS = {"sendMessage", "sendPoll", "stopPoll"}
+ALLOWED_METHODS = {"sendMessage", "sendPoll", "stopPoll", "setChatMenuButton"}
 # Bot API 10.3 sendPoll limits (core.telegram.org/bots/api, checked 2026-11-05).
 MAX_POLL_OPTIONS = 12
 MAX_OPTION_LEN = 100
@@ -69,6 +72,34 @@ def send(text: str, keyboard: list[list[str]] | None = None, remove_keyboard: bo
     elif remove_keyboard:
         payload["reply_markup"] = {"remove_keyboard": True}
     return _call("sendMessage", payload)
+
+
+def _https(url: str) -> bool:
+    return (url or "").lower().startswith("https://")
+
+
+def send_web_app_button(text: str, button_text: str, url: str) -> dict:
+    """sendMessage with one inline web_app button that opens the Mini App at url
+    (Telegram requires https). No callback_data, so nothing reaches Hermes."""
+    allowed = telegram_chat_id()
+    if not allowed:
+        return fail("telegram_not_configured", "TELEGRAM_CHAT_ID is not set.")
+    if not _https(url):
+        return fail("invalid_input", "A web_app button needs an https:// URL (APP_URL).")
+    payload = {"chat_id": allowed, "text": text, "disable_web_page_preview": True,
+               "reply_markup": {"inline_keyboard": [[{"text": button_text, "web_app": {"url": url}}]]}}
+    return _call("sendMessage", payload)
+
+
+def set_menu_button(text: str, url: str) -> dict:
+    """The chat's menu button (bottom-left) opens the Mini App at url."""
+    allowed = telegram_chat_id()
+    if not allowed:
+        return fail("telegram_not_configured", "TELEGRAM_CHAT_ID is not set.")
+    if not _https(url):
+        return fail("invalid_input", "The menu button needs an https:// URL (APP_URL).")
+    return _call("setChatMenuButton", {"chat_id": allowed, "menu_button": {
+        "type": "web_app", "text": text, "web_app": {"url": url}}})
 
 
 def clip(text: str, limit: int) -> str:
