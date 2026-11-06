@@ -105,8 +105,8 @@ enforces each one:
 | `lyrics.py` | Genius, Ultimate Guitar, hindigeetmala, geetmanjusha, lyricsindia, musixmatch, Smule extraction and checks |
 | `lookup.py` | Wikipedia soundtrack lookup |
 | `suggest.py` | `suggest`, `suggest_more`: candidates, ranking.yaml scoring, numbering |
-| `feedback.py` | Relations, ratings, button keyboards, `feedback_tap`, session state |
-| `tg.py` | Telegram Bot API `sendMessage` only (to `TELEGRAM_CHAT_ID`) |
+| `feedback.py` | Relations, ratings, feedback polls and collection, keyboards, `feedback_tap`, session state |
+| `tg.py` | Telegram Bot API send side only: `sendMessage`, `sendPoll`, `stopPoll` (to `TELEGRAM_CHAT_ID`) |
 | `migrate.py` | One-time songs.csv upgrade (adds `my_rating`, `rated_on`) |
 | `common.py` | Env config, result shape, path and URL checks |
 | `try_tool.py` | CLI: run any tool outside MCP |
@@ -647,7 +647,7 @@ into the ranking:
    otherwise from `karaoke_find`, otherwise `no karaoke track found`.
 6. **Save** the ranked list and the number→song map to
    `STATE_ROOT/last_suggestions.json` (last 5 requests), then **send the
-   buttons**. If YouTube fails, catalog results still come back with
+   feedback polls**. If YouTube fails, catalog results still come back with
    `warning: "YouTube Mix unavailable"`.
 
 ```json
@@ -685,50 +685,88 @@ into the ranking:
 ⭐9 · 👍×2 after this`.
 
 **`suggest_more()`** returns the next page of the last list (numbers continue,
-e.g. 21–40). It makes no new YouTube calls and also sends buttons.
+e.g. 21–40). It makes no new YouTube calls and also sends polls (or buttons)
+for the new page.
 
-**Buttons.** Telegram reply keyboards: they replace the phone keyboard, and a
-tap sends the button's text as a normal message, which Hermes delivers to the
-agent. Inline buttons were ruled out after reading Hermes's Telegram adapter:
-its `callback_query` handler acts only on its own prefixes and silently drops
-any other `callback_data`, so taps would never reach the agent
-(`BUTTON_MODE=inline` is refused). Hermes never sends `ReplyKeyboardRemove`
-itself, so the keyboard stays until `done`.
+**Feedback polls** (`FEEDBACK_MODE=poll`, the default). After each `suggest`
+or `suggest_more` page, the bot sends two Telegram **multi-select polls** that
+list the page's songs. Neel ticks every song that applies and taps **Vote**
+once per poll, instead of one tap and one bot reply per song.
 
-- Main keyboard: one row per item `["3 👍", "3 👎", "3 ⭐"]`, then
-  `["more", "done"]`, with `resize_keyboard` and the placeholder "tap or type".
-  Text: `Rate these: 👍 fits · 👎 doesn't fit · ⭐ rate song`.
-- Rating pad (after `3 ⭐`): `["3 ⭐1" … "3 ⭐5"]`, `["3 ⭐6" … "3 ⭐10"]`,
-  `["back"]`.
-- A chat shows one reply keyboard at a time (a newer one replaces it), so a
-  page stays in **one** keyboard. A 20-item page is 62 buttons. It's only
-  split, into messages saying which numbers they cover, past Telegram's
-  ~100-button limit (more than 32 items).
-- Sent with the Bot API `sendMessage` to `TELEGRAM_CHAT_ID` only; any other
-  chat id is refused. The server never calls `getUpdates` or sets a webhook,
-  which would take the gateway's updates.
+- 👍 poll: `👍 Which fit after <reference>?` (`next`: `👍 Which fit "<request
+  words>"?`; plans: `👍 Which fit this plan?`).
+- 👎 poll: the same songs, `👎 Which don't fit after <reference>?`.
+- Options are `#n Title (Singer)`, clipped to Telegram's 100 characters with
+  `…`. Polls are anonymous with `allows_multiple_answers`. Regular polls let
+  you change your vote until it's collected.
+- Telegram allows **12 options per poll** (Bot API 10.3, checked 2026-11-05;
+  historically 10): `tg.MAX_POLL_OPTIONS`. A page that fits gets one pair. A
+  bigger page gets a pair per group (catalog / outside), split into balanced
+  parts (13 → 7 + 6) when a group exceeds 12; the questions then end in
+  `(catalog)` / `(outside)` / `(catalog #1–#9)`. A set of fewer than 2 songs
+  gets no poll: the bot names those numbers and suggests typing `fb 13👍`.
+- The first poll carries `ReplyKeyboardRemove`, so the old buttons disappear.
+- Each poll's `message_id`, type (up/down) and option-index → song map are saved
+  in the request's state with `status: open`.
 
-**`send_buttons(request_id="")`** re-sends the keyboard for a list (default:
-the last one).
+**How votes are read.** The gateway owns the bot's incoming updates, so the
+server never calls `getUpdates` or sets a webhook, and never sees vote events.
+Instead it **closes** each poll with `stopPoll(chat_id, message_id)`, which
+returns the final Poll with a `voter_count` per option. Neel is the only voter,
+so a count of 1 means he ticked that song.
 
-**`feedback_tap(text)`** parses a tapped or typed feedback message and acts on
-it. It returns `{handled, reply}`; `reply` is the one short line for the agent
-to send. Numbers refer to the **most recent** list. Emoji variants parse
-(skin tones, with or without variation selectors, `★`).
+**`feedback_collect(request_id="")`** closes the open polls for one list
+(default: all) and appends to `feedback/relations.csv`:
+- `up` for each song ticked in a 👍 poll, `down` for each in a 👎 poll, with
+  the list's reference key/title, type and request text;
+- **conflict**: a song ticked in both polls of the same list records nothing
+  and is reported;
+- **no feedback**: nothing ticked records nothing;
+- **idempotent**: closed polls are skipped. A poll that can't be closed
+  (deleted, too old) is marked `lost` and reported, never raised.
+
+It returns `{collected, conflicts, lost, overridden, reply}`, where `reply` is
+one line like `Saved: 👍 3 songs, 👎 1 song (after Pal Pal Dil Ke Paas)`.
+
+**Automatic collection,** so Neel rarely has to say anything:
+1. Every `suggest` call first collects the open polls of earlier lists. The
+   votes count in the new ranking, and the summary comes back as
+   `previous_feedback`.
+2. Before **any** tool runs, polls open for more than 24 hours are collected.
+   When there are none, this is a local state check with no network.
+3. Saying `done` collects the latest list.
+
+**Typed feedback still works** (`feedback_tap`). `3 👍`, `3 👎` and `fb 1👍 3👎`
+are saved immediately and **override** that song's poll ticks when the poll is
+collected. `3 ⭐9`, `rate 3 9` and `rate <song> 9` set ratings. In poll mode
+there is no rating UI: a bare `3 ⭐` replies `Type 3 ⭐<1-10> to rate <title>`.
+
+**`FEEDBACK_MODE=keyboard`** keeps the older per-song reply keyboard, which is
+described next. Inline buttons aren't an option either way: Hermes's
+`callback_query` handler acts only on its own prefixes and silently drops any
+other `callback_data`, so taps would never reach the agent
+(`BUTTON_MODE=inline` is refused).
+
+*Keyboard mode:* reply-keyboard rows `["3 👍", "3 👎", "3 ⭐"]` plus
+`["more", "done"]`, and a rating pad after `3 ⭐` (`["3 ⭐1" … "3 ⭐5"]`,
+`["3 ⭐6" … "3 ⭐10"]`, `["back"]`). A page stays in one keyboard (a chat shows
+one reply keyboard at a time) unless it passes ~100 buttons. `send_buttons`
+re-sends it. Tap texts:
 
 | Text | Action |
 |---|---|
-| `3 👍` / `3 👎` | Appends to `relations.csv` for (that list's reference, song #3). Reply: `👍 noted: Yeh Shaam Mastani after Pal Pal Dil Ke Paas`. Tapping the same item again in the same list replaces the first tap. In a plan, the row is written once per reference song. |
-| `3 ⭐` | Sends the rating pad: `Rate Yeh Shaam Mastani:` |
-| `3 ⭐9`, `rate 3 9` | `my_rating=9`, `rated_on=today` via `catalog_upsert`, then the main keyboard again. For an outside song, nothing is written: `needs_add: true` with its title/url, and the rating is kept pending in state. |
+| `3 👍` / `3 👎` | Appends to `relations.csv` for (that list's reference, song #3). Reply: `👍 noted: Yeh Shaam Mastani after Pal Pal Dil Ke Paas`. Tapping again in the same list replaces the first tap. In a plan, a row per reference song. |
+| `3 ⭐` | keyboard mode: the rating pad; poll mode: `Type 3 ⭐<1-10> to rate …` |
+| `3 ⭐9`, `rate 3 9` | `my_rating=9`, `rated_on=today` via `catalog_upsert`. For an outside song nothing is written: `needs_add: true` with its title/url, and the rating is kept pending in state. |
 | `rate <song> 9` | `set_rating` by title |
-| `back` | the main keyboard again |
-| `done` | removes the keyboard (`👍 thanks`) |
+| `back` | keyboard mode: the main keyboard again |
+| `done` | poll mode: `feedback_collect()` for the latest list; keyboard mode: removes the keyboard |
 | `more` | `suggest_more()` |
 | `fb 1👍 3👎 5⭐8` | each item in order; one combined reply |
 
-Unknown numbers reply `#12 isn't in the last list`. Text that isn't feedback
-returns `handled: false`.
+Numbers refer to the **most recent** list. Emoji variants parse (skin tones,
+variation selectors, `★`). Unknown numbers reply `#12 isn't in the last list`.
+Text that isn't feedback returns `handled: false`.
 
 **`set_rating(ref, rating)`** sets a song's rating by song_id or title.
 
@@ -767,8 +805,9 @@ the server does not read a `.env` file.
 | `GENIUS_ACCESS_TOKEN` | unset | Optional free Genius API client token |
 | `LYRICS_EXTRA_DOMAINS` | empty | Extra allowed lyrics domains, comma-separated |
 | `LYRICS_DELAY_SEC` | `2` | Delay between lyrics requests |
-| `TELEGRAM_BOT_TOKEN` | unset | The KaraokeGayak bot token (same bot as the gateway); sendMessage only. Pass `"${TELEGRAM_BOT_TOKEN}"` in config.yaml. |
+| `TELEGRAM_BOT_TOKEN` | unset | The KaraokeGayak bot token (same bot as the gateway); send side only (sendMessage, sendPoll, stopPoll). Pass `"${TELEGRAM_BOT_TOKEN}"` in config.yaml. |
 | `TELEGRAM_CHAT_ID` | unset | The only allowed destination: Neel's Telegram user id (DM chat id). `"${TELEGRAM_HOME_CHANNEL}"` in this profile. |
+| `FEEDBACK_MODE` | `poll` | `poll`: 👍/👎 multi-select polls collected with stopPoll; `keyboard`: the older per-song reply keyboard |
 | `BUTTON_MODE` | `reply` | `reply` keyboard; `inline` is refused (Hermes drops unknown inline taps) |
 | `STATE_ROOT` | `~/.hermes/profiles/karaoke-gayak/state` | Session state (last suggestion lists, pending ratings) |
 
@@ -818,7 +857,7 @@ Apple Silicon you can drop the pins.
 venv/bin/python -m pytest
 ```
 
-285 tests, no network: requests and yt-dlp are patched to fail loudly. Each
+312 tests, no network: requests and yt-dlp are patched to fail loudly. Each
 test runs against a fresh temp copy of `tests/fixtures/wiki/`, which is a copy
 of the real `SCHEMA.md` and the empty skeleton. The tests cover:
 
@@ -865,7 +904,7 @@ npx @modelcontextprotocol/inspector \
   venv/bin/python server.py
 ```
 
-Add `--cli --method tools/list` to list the 31 tools in the terminal instead of
+Add `--cli --method tools/list` to list the 32 tools in the terminal instead of
 the browser.
 
 ## Wiring into Hermes
@@ -891,6 +930,7 @@ mcp_servers:
       # when it starts the server, so the token never appears in config.yaml.
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN}"
       TELEGRAM_CHAT_ID: "${TELEGRAM_HOME_CHANNEL}"
+      FEEDBACK_MODE: "poll"
       BUTTON_MODE: "reply"
       STATE_ROOT: "/Users/bishpaul/.hermes/profiles/karaoke-gayak/state"
 ```

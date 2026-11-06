@@ -19,6 +19,13 @@ from conftest import FIXTURES
 TODAY = date.today().isoformat()
 
 
+@pytest.fixture(autouse=True)
+def keyboard_mode(monkeypatch):
+    """These tests cover FEEDBACK_MODE=keyboard (the older button UI); the poll
+    UI (the default) is covered in test_polls.py."""
+    monkeypatch.setenv("FEEDBACK_MODE", "keyboard")
+
+
 def add(**row):
     r = catalog.catalog_upsert(row)
     assert r["success"], r

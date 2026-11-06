@@ -18,7 +18,7 @@ import catalog
 import tg
 import vocab
 import youtube
-from common import fail, log, ok, state_root
+from common import fail, feedback_mode, log, ok, state_root
 
 RELATIONS_REL = "feedback/relations.csv"
 STATE_FILE = "last_suggestions.json"
@@ -222,6 +222,212 @@ def send_buttons(request_id: str = "") -> dict:
     return send_main_keyboard(req)
 
 
+# --- polls ---------------------------------------------------------------------------------
+#
+# FEEDBACK_MODE=poll (default): after each suggest page, a 👍 and a 👎
+# multi-select poll list the page's songs. Neel ticks all that apply and taps
+# Vote once. The gateway owns the bot's incoming updates, so the votes are read
+# by closing the poll with stopPoll: its result has voter_count per option, and
+# as the only voter a count of 1 means he ticked it.
+
+STALE_HOURS = 24
+
+
+def _poll_option(it: dict) -> str:
+    singer = (it.get("singers") or "").split(";")[0].strip()
+    return tg.clip(f"#{it['n']} {it['title']}" + (f" ({singer})" if singer else ""), tg.MAX_OPTION_LEN)
+
+
+def _questions(req: dict) -> tuple[str, str]:
+    if req["mode"] == "next":
+        target = f'"{req["reference_title"]}"'
+        return f"👍 Which fit {target}?", f"👎 Which don't fit {target}?"
+    if req["mode"] == "plan":
+        return "👍 Which fit this plan?", "👎 Which don't fit this plan?"
+    return (f"👍 Which fit after {req['reference_title']}?",
+            f"👎 Which don't fit after {req['reference_title']}?")
+
+
+def _chunks(items: list[dict], size: int) -> list[list[dict]]:
+    """Split into balanced chunks of at most size (13 -> 7 + 6, not 12 + 1)."""
+    if not items:
+        return []
+    k = -(-len(items) // size)
+    base, extra = divmod(len(items), k)
+    out, i = [], 0
+    for j in range(k):
+        n = base + (1 if j < extra else 0)
+        out.append(items[i:i + n])
+        i += n
+    return out
+
+
+def poll_groups(items: list[dict]) -> tuple[list[tuple[str, list[dict]]], list[int]]:
+    """Which songs go in which poll pair. One pair for the page when it fits
+    MAX_POLL_OPTIONS; otherwise a pair per group (catalog / outside), split
+    further if needed. A set of fewer than 2 songs gets no poll; returns its
+    numbers as 'type fb' songs."""
+    limit = tg.MAX_POLL_OPTIONS
+    if len(items) <= limit:
+        sets = [("", items)]
+    else:
+        sets = []
+        for group in ("catalog", "outside"):
+            g = [it for it in items if it["group"] == group]
+            parts = _chunks(g, limit)
+            for part in parts:
+                label = group if len(parts) == 1 else f"{group} #{part[0]['n']}–#{part[-1]['n']}"
+                sets.append((label, part))
+    polled, typed_only = [], []
+    for label, part in sets:
+        if len(part) >= 2:
+            polled.append((label, part))
+        else:
+            typed_only += [it["n"] for it in part]
+    return polled, typed_only
+
+
+def send_polls(req: dict, items: list[dict]) -> dict:
+    """Send the 👍/👎 poll pairs for a page and record them in the request."""
+    polled, typed_only = poll_groups(items)
+    q_up, q_down = _questions(req)
+    req.setdefault("polls", [])
+    sent, first = 0, True
+    for label, part in polled:
+        suffix = f" ({label})" if label else ""
+        options = [_poll_option(it) for it in part]
+        for kind, question in (("up", q_up), ("down", q_down)):
+            r = tg.send_poll(question + suffix, options, remove_keyboard=first)
+            first = False
+            if not r["success"]:
+                save_request(req)
+                return r | {"polls_sent": sent, "typed_only": typed_only}
+            req["polls"].append({"message_id": r["message_id"], "type": kind,
+                                 "options": {str(i): it["n"] for i, it in enumerate(part)},
+                                 "status": "open",
+                                 "sent_at": datetime.now().isoformat(timespec="seconds")})
+            sent += 1
+    save_request(req)
+    if typed_only:
+        tg.send("Not in a poll: " + ", ".join(f"#{n}" for n in typed_only) +
+                ". Rate them by typing e.g. fb " + " ".join(f"{n}👍" for n in typed_only))
+    return ok(polls_sent=sent, typed_only=typed_only)
+
+
+def send_feedback(req: dict, items: list[dict]) -> dict:
+    """The feedback UI for a page, per FEEDBACK_MODE."""
+    if feedback_mode() == "keyboard":
+        return send_main_keyboard(req)
+    return send_polls(req, items)
+
+
+def _collect_request(req: dict) -> dict:
+    """Close a request's open polls and record their ticks."""
+    ups, downs, lost, closed_any = set(), set(), [], False
+    for p in req.get("polls", []):
+        if p["status"] != "open":
+            continue
+        r = tg.stop_poll(p["message_id"])
+        if not r["success"]:
+            p["status"] = "lost"
+            p["error"] = r["error"][:200]
+            lost.append({"request_id": req["request_id"], "message_id": p["message_id"],
+                         "type": p["type"], "error": p["error"]})
+            continue
+        closed_any = True
+        p["status"] = "closed"
+        p["closed_at"] = datetime.now().isoformat(timespec="seconds")
+        ticked = [p["options"][str(i)] for i, o in enumerate(r["poll"].get("options", []))
+                  if str(i) in p["options"] and (o.get("voter_count") or 0) >= 1]
+        p["ticked"] = ticked
+        (ups if p["type"] == "up" else downs).update(ticked)
+    save_request(req)
+    conflicts = sorted(ups & downs)
+    typed = {int(n) for n in req.get("taps", {})}  # typed fb overrides poll ticks
+    collected = []
+    for n in sorted((ups | downs) - set(conflicts) - typed):
+        verdict = "up" if n in ups else "down"
+        record_relation(req, n, verdict)
+        collected.append({"n": n, "title": req["numbers"][str(n)]["title"], "verdict": verdict})
+    return {"request_id": req["request_id"], "reference_title": req["reference_title"],
+            "mode": req["mode"], "closed_any": closed_any, "collected": collected,
+            "conflicts": [{"n": n, "title": req["numbers"][str(n)]["title"]} for n in conflicts],
+            "overridden": sorted(n for n in (ups | downs) & typed), "lost": lost}
+
+
+def _summary(results: list[dict]) -> str:
+    parts = []
+    for res in results:
+        if not res["closed_any"] and not res["lost"]:
+            continue
+        up = sum(1 for c in res["collected"] if c["verdict"] == "up")
+        down = len(res["collected"]) - up
+        ref = res["reference_title"] if res["mode"] != "next" else f"'{res['reference_title']}'"
+        word = {"like": "after", "after": "after", "next": "for", "plan": "in"}[res["mode"]]
+        if res["mode"] == "plan":
+            ref = "your plan"
+        if up or down:
+            bits = []
+            if up:
+                bits.append(f"👍 {up} song{'s' if up != 1 else ''}")
+            if down:
+                bits.append(f"👎 {down} song{'s' if down != 1 else ''}")
+            line = f"Saved: {', '.join(bits)} ({word} {ref})"
+        elif res["closed_any"]:
+            line = f"No feedback ({word} {ref})"
+        else:
+            line = ""
+        if res["conflicts"]:
+            line += (" · " if line else "") + "ticked in both, not saved: " + \
+                ", ".join(f"#{c['n']} {c['title']}" for c in res["conflicts"])
+        if res["lost"]:
+            line += (" · " if line else "") + f"{len(res['lost'])} poll(s) couldn't be read"
+        if line:
+            parts.append(line)
+    return " | ".join(parts) if parts else "No open polls."
+
+
+def feedback_collect(request_id: str = "", older_than_hours: float | None = None,
+                     skip_request_id: str = "") -> dict:
+    """Close open polls (one request, or all) and save their ticks as relations.
+    Polls already closed are skipped, so it's safe to call again."""
+    with _lock:
+        reqs = load_state()["requests"]
+        if request_id:
+            reqs = [r for r in reqs if r["request_id"] == request_id]
+            if not reqs:
+                return fail("no_request", f"No suggestion list {request_id}.")
+        cutoff = datetime.now().timestamp() - older_than_hours * 3600 if older_than_hours else None
+        results = []
+        for req in reqs:
+            if req["request_id"] == skip_request_id:
+                continue
+            open_polls = [p for p in req.get("polls", []) if p["status"] == "open"]
+            if not open_polls:
+                continue
+            if cutoff and all(datetime.fromisoformat(p["sent_at"]).timestamp() > cutoff
+                              for p in open_polls):
+                continue
+            results.append(_collect_request(req))
+    collected = [c | {"request_id": r["request_id"]} for r in results for c in r["collected"]]
+    conflicts = [c | {"request_id": r["request_id"]} for r in results for c in r["conflicts"]]
+    lost = [x for r in results for x in r["lost"]]
+    return ok(collected=collected, conflicts=conflicts, lost=lost,
+              overridden=[{"request_id": r["request_id"], "n": n} for r in results for n in r["overridden"]],
+              reply=_summary(results))
+
+
+def collect_stale() -> dict | None:
+    """Collect polls left open for more than STALE_HOURS. Cheap when there are
+    none (no network); called before every tool."""
+    st = load_state()
+    cutoff = datetime.now().timestamp() - STALE_HOURS * 3600
+    if not any(p["status"] == "open" and datetime.fromisoformat(p["sent_at"]).timestamp() <= cutoff
+               for r in st["requests"] for p in r.get("polls", [])):
+        return None
+    return feedback_collect(older_than_hours=STALE_HOURS)
+
+
 # --- taps --------------------------------------------------------------------------------
 
 _EMOJI_NOISE = re.compile("[︎️‍\U0001f3fb-\U0001f3ff]")
@@ -244,7 +450,9 @@ def _apply(req: dict, n: int, op: str, rating: int | None, state: dict) -> dict:
         return {"reply": f"#{n} isn't in the last list", "keyboard": "none"}
     if op in ("👍", "👎"):
         return {"reply": record_relation(req, n, "up" if op == "👍" else "down"), "keyboard": "none"}
-    if rating is None:  # "3 ⭐" -> rating pad
+    if rating is None:  # "3 ⭐": the rating pad (keyboard mode) or a hint (poll mode)
+        if feedback_mode() == "poll":
+            return {"reply": f"Type {n} ⭐<1-10> to rate {it['title']}", "keyboard": "none"}
         return {"reply": "", "keyboard": "pad", "pad": n, "title": it["title"]}
     if not 1 <= rating <= 10:
         return {"reply": "Ratings are 1-10", "keyboard": "none"}
@@ -253,13 +461,15 @@ def _apply(req: dict, n: int, op: str, rating: int | None, state: dict) -> dict:
         if not r["success"]:
             return {"reply": f"Couldn't save the rating: {r['error']}", "keyboard": "none"}
         it["my_rating"] = str(rating)
-        return {"reply": f"⭐{rating} saved for {it['title']}", "keyboard": "main"}
+        return {"reply": f"⭐{rating} saved for {it['title']}",
+                "keyboard": "main" if feedback_mode() == "keyboard" else "none"}
     state["pending_ratings"][it["song_key"]] = {"rating": rating, "title": it["title"],
                                                "url": it.get("karaoke_url") or it.get("video_url", ""),
                                                "logged_at": datetime.now().isoformat(timespec="seconds")}
     return {"reply": f"⭐{rating} for {it['title']} kept: it isn't in the catalog yet, add it to save "
                      f"the rating", "keyboard": "main", "needs_add": True,
-            "title": it["title"], "url": it.get("karaoke_url") or it.get("video_url", "")}
+            "title": it["title"], "url": it.get("karaoke_url") or it.get("video_url", ""),
+            **({"keyboard": "none"} if feedback_mode() == "poll" else {})}
 
 
 def feedback_tap(text: str) -> dict:
@@ -270,10 +480,15 @@ def feedback_tap(text: str) -> dict:
         if not req:
             return ok(handled=True, reply="There's no suggestion list right now.")
         if low == "done":
+            if feedback_mode() == "poll":
+                r = feedback_collect(req["request_id"])
+                return r | {"handled": True}
             r = tg.send("👍 thanks", remove_keyboard=True)
             return ok(handled=True, reply="", sent=r["success"],
                       warnings=[] if r["success"] else [r["error"]])
         if low == "back":
+            if feedback_mode() == "poll":
+                return ok(handled=True, reply="Tick the songs in the polls above, then tap Vote.")
             r = send_main_keyboard(req)
             return ok(handled=True, reply="", sent=r["success"],
                       warnings=[] if r["success"] else [r["error"]])

@@ -35,8 +35,25 @@ mcp = Server("karaoke-tools")
 TOOLS: dict = {}
 
 
+def _collect_stale_polls():
+    """Feedback polls left open over 24 h are collected before any tool runs, so
+    votes are saved even if Neel never says done. No network when there are none."""
+    try:
+        feedback.collect_stale()
+    except Exception as e:  # never let bookkeeping break a tool
+        from common import log
+        log(f"[collect_stale] {e!r}")
+
+
 def tool(fn):
-    wrapped = safe_tool(fn)
+    inner = fn
+
+    def with_stale(*args, **kwargs):
+        _collect_stale_polls()
+        return inner(*args, **kwargs)
+
+    import functools
+    wrapped = safe_tool(functools.wraps(fn)(with_stale))
     TOOLS[fn.__name__] = wrapped
     mcp.tool()(wrapped)
     return wrapped
@@ -289,8 +306,11 @@ def suggest(mode: str, reference: str = "", url: str = "", references: StrList =
     groups (catalog first): {n, group, song_key, title, film, year, singers,
     tempo_class, energy, status, my_rating, my_key_change, karaoke_url, score,
     reasons}. Show each item as "n. title (film) · karaoke_url · reasons".
-    With send_buttons, a 👍/👎/⭐ button keyboard is sent to Neel's chat; his
-    taps arrive as messages like "3 👍": pass those to feedback_tap.
+    With send_buttons, two multi-select polls are sent to Neel's chat ("👍
+    Which fit after X?", "👎 Which don't fit?"); he ticks songs and taps Vote.
+    Votes are collected automatically by the next suggest call, by "done",
+    or by feedback_collect; previous_feedback reports what was saved (send its
+    reply line). Typed feedback ("3 👍", "fb 1👍 3👎") goes to feedback_tap.
     """
     return suggest_mod.suggest(mode, reference, url, references, query, limit_catalog,
                                limit_outside, exclude, send_buttons)
@@ -299,27 +319,39 @@ def suggest(mode: str, reference: str = "", url: str = "", references: StrList =
 @tool
 def suggest_more(send_buttons: bool = True) -> dict:
     """The next page of the last suggest list (numbering continues, e.g. 21-40),
-    with no new YouTube calls. Also sends the buttons for the new page."""
+    with no new YouTube calls. Also sends polls for the new page."""
     return suggest_mod.suggest_more(send_buttons)
 
 
 @tool
 def send_buttons(request_id: str = "") -> dict:
-    """Re-send the 👍/👎/⭐ keyboard for a suggest list (default: the last one)."""
+    """Re-send the reply keyboard for a suggest list (FEEDBACK_MODE=keyboard only;
+    default: the last list)."""
     return feedback.send_buttons(request_id)
 
 
 @tool
 def feedback_tap(text: str) -> dict:
-    """Handle a feedback message from Neel: a button tap or typed feedback such as
-    "3 👍", "3 👎", "3 ⭐" (opens the 1-10 rating pad), "3 ⭐9", "rate 3 9",
-    "rate <song> 9", "fb 1👍 3👎 5⭐8", "back", "more", "done". Call it first for
-    any message that looks like this. Returns {handled, reply}: if handled,
+    """Handle a feedback message from Neel: typed feedback such as "3 👍", "3 👎",
+    "3 ⭐9", "rate 3 9", "rate <song> 9", "fb 1👍 3👎 5⭐8", or "more" / "done"
+    ("done" collects the poll votes). Typed 👍/👎 for a song overrides its
+    poll ticks. Call it first for any message that looks like this. Returns {handled, reply}: if handled,
     send exactly `reply` (one short line; nothing if it's empty) and don't
     comment further. needs_add: true means a rated song isn't in the catalog
     yet: offer to add it (title, url given); its rating is kept until then.
     If handled is false, treat the message normally."""
     return feedback.feedback_tap(text)
+
+
+@tool
+def feedback_collect(request_id: str = "") -> dict:
+    """Close the open 👍/👎 polls (for one suggest list, default: all) and save
+    the ticked songs to relations.csv: 👍 poll -> up, 👎 poll -> down. A song
+    ticked in both is not saved (conflicts). Closed polls are skipped, so it's
+    safe to repeat; polls that can't be read (deleted) are reported as lost.
+    Returns {collected, conflicts, lost, reply}: send `reply` (one line).
+    suggest and "done" already collect automatically."""
+    return feedback.feedback_collect(request_id)
 
 
 @tool

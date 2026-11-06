@@ -16,7 +16,8 @@ EXPECTED_TOOLS = sorted([
     "scan_folder", "analyze_audio",
     "channel_index_refresh", "karaoke_find", "youtube_info", "youtube_fetch_audio",
     "cleanup_job", "check_links", "playlist_list", "playlist_triage", "youtube_mix",
-    "suggest", "suggest_more", "send_buttons", "feedback_tap", "set_rating", "relations_rekey",
+    "suggest", "suggest_more", "send_buttons", "feedback_tap", "feedback_collect", "set_rating",
+    "relations_rekey",
     "relations_for",
     "lyrics_search", "lyrics_from_url", "song_lookup",
 ])

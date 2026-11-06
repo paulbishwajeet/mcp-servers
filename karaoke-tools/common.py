@@ -104,6 +104,16 @@ def telegram_chat_id() -> str:
     return os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 
 
+FEEDBACK_MODES = ("poll", "keyboard")
+
+
+def feedback_mode() -> str:
+    """poll (default): 👍/👎 multi-select polls; keyboard: the older per-song
+    reply-keyboard buttons."""
+    mode = os.environ.get("FEEDBACK_MODE", "poll").strip().lower()
+    return mode if mode in FEEDBACK_MODES else "poll"
+
+
 def button_mode() -> str:
     mode = os.environ.get("BUTTON_MODE", "reply").strip().lower()
     return mode if mode in BUTTON_MODES else "reply"
