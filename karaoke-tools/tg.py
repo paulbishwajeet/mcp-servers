@@ -49,8 +49,8 @@ def _call(method: str, payload: dict) -> dict:  # noqa: C901
         return fail("telegram_error", msg)
     if not data.get("ok"):
         return fail("telegram_error", data.get("description") or f"HTTP {resp.status_code}")
-    result = data.get("result") or {}
-    return ok(message_id=result.get("message_id"), result=result)
+    result = data.get("result")  # a Message for send*, plain true for setChatMenuButton
+    return ok(message_id=result.get("message_id") if isinstance(result, dict) else None, result=result)
 
 
 def send(text: str, keyboard: list[list[str]] | None = None, remove_keyboard: bool = False,

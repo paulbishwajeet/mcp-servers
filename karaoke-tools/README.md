@@ -950,8 +950,8 @@ id per app open) groups activity for the close summary.
    ```
    Logs: `~/.hermes/profiles/karaoke-gayak/logs/karaoke-app*.log`. After a code
    change: `launchctl stop com.bishpaul.karaoke-app` (KeepAlive starts it again).
-6. **Menu button.** `venv/bin/python setup_menu_button.py` (again whenever
-   APP_URL changes).
+6. **Menu button.** `venv/bin/python setup_menu_button.py https://<machine>.<tailnet>.ts.net`
+   (again whenever the address changes). Then close and reopen the chat.
 7. **Keep the Mac awake.** The app (and the bot) only work while the Mac is
    awake: System Settings → Battery/Energy → "Prevent automatic sleeping when
    the display is off" (on power), or `caffeinate -s` while plugged in. If the

@@ -82,6 +82,8 @@ class FakeTelegram:
                 body = {"ok": True, "result": {"id": f"p{m}", "is_closed": True, "options": [
                     {"text": o["text"], "voter_count": 1 if i in self.votes.get(m, ()) else 0}
                     for i, o in enumerate(opts)]}}
+        elif method == "setChatMenuButton":
+            body = {"ok": True, "result": True}  # like the real API
         else:
             body = {"ok": True, "result": {"message_id": mid}}
 
