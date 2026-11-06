@@ -288,3 +288,13 @@ def test_all_polls_of_a_page_can_be_collected(mix, telegram, wiki):
     telegram.votes = {ids[0]: [0]}
     c = feedback.feedback_collect()
     assert c["lost"] == [] and len(c["collected"]) == 1  # the first poll too
+
+
+def test_feedback_mode_off_sends_nothing_but_typed_feedback_works(mix, telegram, wiki, monkeypatch):
+    monkeypatch.setenv("FEEDBACK_MODE", "off")
+    r = run_like()
+    assert r["success"] and telegram.calls == []
+    assert feedback.latest_request().get("polls", []) == []
+    assert feedback.feedback_tap("1 👍")["reply"].startswith("👍 noted:")
+    assert feedback.feedback_tap("1 ⭐7")["reply"].startswith("⭐7 saved")
+    assert telegram.calls == []

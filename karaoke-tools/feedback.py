@@ -330,7 +330,10 @@ def send_polls(req: dict, items: list[dict]) -> dict:
 
 def send_feedback(req: dict, items: list[dict]) -> dict:
     """The feedback UI for a page, per FEEDBACK_MODE."""
-    if feedback_mode() == "keyboard":
+    mode = feedback_mode()
+    if mode == "off":
+        return ok(feedback_ui="off")
+    if mode == "keyboard":
         return send_main_keyboard(req)
     return send_polls(req, items)
 

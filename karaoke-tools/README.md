@@ -741,8 +741,9 @@ are saved immediately and **override** that song's poll ticks when the poll is
 collected. `3 ⭐9`, `rate 3 9` and `rate <song> 9` set ratings. In poll mode
 there is no rating UI: a bare `3 ⭐` replies `Type 3 ⭐<1-10> to rate <title>`.
 
-**`FEEDBACK_MODE=keyboard`** keeps the older per-song reply keyboard, which is
-described next. Inline buttons aren't an option either way: Hermes's
+**`FEEDBACK_MODE=off`** sends no feedback UI at all (typed feedback still
+works). **`FEEDBACK_MODE=keyboard`** keeps the older per-song reply keyboard,
+which is described next. Inline buttons aren't an option either way: Hermes's
 `callback_query` handler acts only on its own prefixes and silently drops any
 other `callback_data`, so taps would never reach the agent
 (`BUTTON_MODE=inline` is refused).
@@ -807,7 +808,7 @@ the server does not read a `.env` file.
 | `LYRICS_DELAY_SEC` | `2` | Delay between lyrics requests |
 | `TELEGRAM_BOT_TOKEN` | unset | The KaraokeGayak bot token (same bot as the gateway); send side only (sendMessage, sendPoll, stopPoll). Pass `"${TELEGRAM_BOT_TOKEN}"` in config.yaml. |
 | `TELEGRAM_CHAT_ID` | unset | The only allowed destination: Neel's Telegram user id (DM chat id). `"${TELEGRAM_HOME_CHANNEL}"` in this profile. |
-| `FEEDBACK_MODE` | `poll` | `poll`: 👍/👎 multi-select polls collected with stopPoll; `keyboard`: the older per-song reply keyboard |
+| `FEEDBACK_MODE` | `poll` | `poll`: 👍/👎 multi-select polls collected with stopPoll; `keyboard`: the older per-song reply keyboard; `off`: no feedback UI is sent (typed `fb 1👍` / `rate 3 9` still work) |
 | `BUTTON_MODE` | `reply` | `reply` keyboard; `inline` is refused (Hermes drops unknown inline taps) |
 | `STATE_ROOT` | `~/.hermes/profiles/karaoke-gayak/state` | Session state (last suggestion lists, pending ratings) |
 
