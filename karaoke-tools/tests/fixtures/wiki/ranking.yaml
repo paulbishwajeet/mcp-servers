@@ -30,3 +30,19 @@ rating: {"9-10": 3, "7-8": 2, "5-6": 0, "3-4": -1, "1-2": -3}
 max_per_singer: 3
 # Plans skip songs rated this low or lower.
 exclude_rating_at_or_below_in_plans: 2
+
+# Event Planner suggestions (Mini App), on top of status, rating and crowd_score:
+# matches with the event's theme / situation and the parsed instructions, and a
+# penalty for songs sung at a similar event (same kind or theme) within
+# recent_days. must_include lifts songs the instructions name.
+event:
+  situation_match: 3
+  theme_match: 2
+  mood_match: 1        # a mood or genre the instructions asked for
+  era_match: 2
+  era_miss: -1         # when the instructions name eras and this isn't one
+  voice_match: 2       # a wanted voice type, or a duet while duets are short
+  tempo_match: 1
+  recent_similar_event: -3
+  recent_days: 365
+  must_include: 20

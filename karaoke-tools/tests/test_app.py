@@ -175,7 +175,9 @@ def test_open_app_sends_web_app_button_to_the_allowed_chat_only(wiki, telegram):
 
 
 def test_open_app_validation(wiki, telegram, monkeypatch):
-    assert appstart.open_app("events")["error_code"] == "invalid_input"
+    assert appstart.open_app("bogus")["error_code"] == "invalid_input"
+    assert appstart.open_app("event")["error_code"] == "invalid_input"          # needs the event id
+    assert appstart.open_app("feedback")["error_code"] == "not_found"          # no past event yet
     assert appstart.open_app("similar")["error_code"] == "invalid_input"
     assert appstart.open_app("similar", url="https://evil.example/x")["error_code"] == "url_not_allowed"
     monkeypatch.setenv("APP_URL", "http://insecure.example")

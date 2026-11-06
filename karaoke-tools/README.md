@@ -110,6 +110,7 @@ enforces each one:
 | `cache.py` | Mix cache (24 h) and karaoke-track cache (30 days) in `STATE_ROOT/cache` |
 | `locks.py` | One lock for every wiki/state write, across threads and processes (`fcntl.flock` on `STATE_ROOT/wiki.lock`), so the agent and the app never lose each other's writes |
 | `appstart.py` | `open_app`: start codes and the 🎵 Open button |
+| `events.py` | Event files for the Event Planner: parse/rewrite, summary, warnings, suggestions, auto-order, finish |
 | `app/` | The Mini App: FastAPI server (`main.py`, `auth.py`, `similar.py`, `jobs.py`) and the static front end (`static/`) |
 | `setup_menu_button.py` | Sets the bot's menu button to open the app |
 | `launchd/com.bishpaul.karaoke-app.plist` | Keeps the app server running |
@@ -768,9 +769,9 @@ nothing. Until then, catalog tools return `schema_mismatch` with this hint.
 ## Mini App
 
 A Telegram Mini App inside the KaraokeGayak bot for anything with lists and
-taps: Suggest Similar, ♥ likes, ⭐ ratings, editing and adding songs. The chat
-stays for natural requests. Spec: `docs/mini-app-spec-v1.md` (Phase 1 =
-Suggest Similar; the Event Planner comes later).
+taps: Suggest Similar, ♥ likes, ⭐ ratings, editing and adding songs, and the
+Event Planner (plan a set, then give feedback after the show). The chat stays
+for natural requests. Spec: `docs/mini-app-spec-v1.md`.
 
 The app server (`app/`) imports the same modules as the MCP server
 (catalog, suggest, feedback, youtube, cache), so the chat and the app always
@@ -838,6 +839,53 @@ chat agent (Hermes) ── open_app ──▶ "Similar to X  [🎵 Open]"  (web_
   situation / tempo_class (that needs the agent), so the song gets
   `needs_review` and a review.csv row ("Added from the Mini App: … not tagged
   yet"). Ask the agent to "tag the songs added from the app".
+- **Event Planner** (Home → 📅 Events, or `open_app` views `events`,
+  `new_event`, `event`, `feedback`):
+  - **Events list:** Upcoming and Past, with date/time, theme, songs, total
+    time, and a status badge. Status goes draft → planned (✓ Create) →
+    performed (feedback finished). Past events show **Feedback**.
+  - **New event / Details:** name, date, time, kind, theme (SCHEMA
+    situation/theme chips plus free text), instructions, duration, number of
+    songs, venue, audience. **Instructions** ("45 minutes, mostly 70s–80s, 2
+    duets, start peppy, end with a singalong") are read by Claude Haiku (the
+    profile's `ANTHROPIC_API_KEY`, one small call). The result is shown as
+    removable chips (45 min · 1970s–80s · 2 duets · peppy start · singalong
+    end), and ↻ Re-read reads them again. Haiku fills a fixed schema checked
+    against SCHEMA.md; without a key, simple word rules are used instead.
+  - **Playlist:** drag ≡ to reorder; ✕ removes (with Undo); ⇅ **Auto-order**
+    arranges by the energy arc (strong opener, harder songs early, no two slow
+    or two very fast in a row, singalong closer). A sticky summary bar shows
+    time against the target, songs, duets, and a small energy curve. Warnings:
+    outside catalog, practicing/wishlist, "sung at <event> (<date>)" for a
+    similar event within a year.
+  - **Suggestions:** 10 at a time (More) from the catalog, ranked by theme and
+    situation, the parsed instructions (eras, moods, duets still needed,
+    must-include, avoid), rating, status, crowd score, and a penalty for songs
+    sung at a similar event recently (`event:` weights in `ranking.yaml`). ＋
+    adds; ✕ means "not for this event" (hidden for this event only, no global
+    dislike); there's also a catalog search box.
+  - **YouTube ideas** (collapsed): songs outside the catalog from the YouTube
+    Mixes of the playlist songs. A song several playlist songs point to ranks
+    higher, and each is shown with its karaoke track. ↪ Similar from an event
+    page adds a **＋** "Add to event" button to every row.
+  - **✓ Create** locks the playlist in (status planned) and sends one line to
+    the chat. It first offers to add any outside songs to the catalog, so
+    feedback can be tracked; adding moves them to their `song_id` in every
+    unfinished event.
+  - **Feedback:** per song, Standout / Good / Weak, a comment, Skipped and ⭐;
+    audience requests (one per line) and overall notes; all autosaved.
+    **Finish** sets status performed and runs `event_apply` (times_performed,
+    crowd_score, last_performed; skipped songs don't count). It adds audience
+    requests that aren't in the catalog as wishlist songs (flagged for the agent
+    to identify), and stores "fits after" links (`like`, request_type `after`)
+    for consecutive songs that both went standout/good. It sends one line to
+    the chat. Feedback can be edited and finished again; links that no longer
+    hold are undone.
+  - **Files:** everything is the event's markdown file in `events/` (`events.py`).
+    The app rewrites only the front matter, the set-list table, and the two
+    bullet lists, and keeps everything else the agent wrote. Performed events
+    accept only feedback changes. New front-matter keys and the `Skipped` /
+    `Comment` columns are documented in SCHEMA.md.
 - **Done** (and, best effort, hiding the app) sends one line to the chat,
   e.g. *Saved 4 likes, 2 ratings, 1 song added (similar to Pal Pal Dil Ke
   Paas)*. Only what's new since the last summary; nothing saved, no message.
@@ -866,6 +914,15 @@ id per app open) groups activity for the close summary.
 | `GET /original?title=&film=` | the original video, for the player's Original tab |
 | `POST /session/close` | sends the one-line summary |
 | `GET /vocab` | allowed values for the edit sheet |
+| `GET /events` | `{upcoming, past}` |
+| `POST /events` | new draft `{name, date, time, event_type, theme, instructions, duration_min, song_count, venue, audience}` (reads the instructions) |
+| `GET /events/{id}` · `PUT /events/{id}` | the event (meta, chips, playlist with warnings, summary) · change details (re-reads changed instructions) |
+| `POST /events/{id}/parse` · `/chips/remove` | re-read the instructions · drop one chip |
+| `POST /events/{id}/songs` · `DELETE /events/{id}/songs/{key}` · `PUT /events/{id}/order` · `POST /events/{id}/autoorder` | edit the playlist |
+| `GET /events/{id}/suggestions?page=` · `POST /events/{id}/hide` | catalog suggestions · "not for this event" |
+| `GET /events/{id}/ideas?page=` | YouTube ideas (waits up to 20 s while the mixes load) |
+| `POST /events/{id}/create` | status planned + one chat line |
+| `PUT /events/{id}/feedback` · `POST /events/{id}/finish` | autosave outcome/comment/skipped/requests/notes · finish (event_apply, links, wishlist, one chat line) |
 
 ### Setup
 
@@ -939,6 +996,7 @@ the server does not read a `.env` file.
 | `BUTTON_MODE` | `reply` | `reply` keyboard; `inline` is refused (Hermes drops unknown inline taps) |
 | `STATE_ROOT` | `~/.hermes/profiles/karaoke-gayak/state` | Session state (last suggestion lists, pending ratings), caches, start codes, the write lock |
 | `APP_URL` | unset | The Mini App's https address (Tailscale Funnel), for `open_app` and the menu button |
+| `ANTHROPIC_API_KEY` | unset | App server only (read from the profile `.env`): Haiku reads event instructions. Without it, word rules are used |
 
 ## Install (Intel Mac)
 

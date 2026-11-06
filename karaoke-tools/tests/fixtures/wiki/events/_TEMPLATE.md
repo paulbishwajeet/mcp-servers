@@ -6,15 +6,20 @@ event_type: festival        # festival | wedding | sangeet | birthday | house-pa
 audience: 
 duration_min: 
 co_singers: 
+time: 
+song_count: 
+theme: 
+instructions: 
+status: draft             # draft | planned | performed
 ---
 
 # Diwali 2026
 
 ## Set list
 
-| # | song_id | Title | Key change | Link used | Outcome | Notes |
-|---|---------|-------|-----------|-----------|---------|-------|
-| 1 | | | | | standout / good / weak | |
+| # | song_id | Title | Key change | Link used | Outcome | Skipped | Comment | Notes |
+|---|---------|-------|-----------|-----------|---------|---------|---------|-------|
+| 1 | | | | | standout / good / weak | | | |
 
 ## Audience requests
 

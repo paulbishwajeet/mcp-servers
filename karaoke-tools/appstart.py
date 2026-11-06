@@ -13,13 +13,14 @@ import secrets
 import time
 
 import catalog
+import events
 import locks
 import tg
 from common import app_url, fail, is_youtube_url, ok, state_root
 
 CODE_TTL = 7 * 24 * 3600
 CODE_RE = re.compile(r"^[A-Za-z0-9_-]{8,12}$")
-VIEWS = ("home", "similar")
+VIEWS = ("home", "similar", "events", "new_event", "event", "feedback")
 MAX_SEED_LEN = 200
 
 
@@ -65,6 +66,18 @@ def open_app(view: str = "similar", seed: str = "", url: str = "") -> dict:
         return fail("invalid_input", f"view must be one of {', '.join(VIEWS)}.")
     if view == "similar" and not (seed or url):
         return fail("invalid_input", "view=similar needs a seed song or a YouTube url.")
+    if view in ("event", "feedback") and seed:
+        try:
+            ev = events.load(seed)
+        except (ValueError, OSError):
+            return fail("not_found", f"No event '{seed}' (give the file name without .md).")
+    elif view == "feedback":
+        seed = events.latest_past()
+        if not seed:
+            return fail("not_found", "There's no past event to give feedback on.")
+        ev = events.load(seed)
+    elif view == "event":
+        return fail("invalid_input", "view=event needs seed = the event id (file name without .md).")
     if url and not is_youtube_url(url):
         return fail("url_not_allowed", "url must be a YouTube link.")
     if len(seed) > MAX_SEED_LEN:
@@ -73,7 +86,10 @@ def open_app(view: str = "similar", seed: str = "", url: str = "") -> dict:
     if not base.startswith("https://"):
         return fail("app_not_configured", "APP_URL is not set to the app's https:// address.")
     code = new_code(view, seed, url)
-    text = f"Similar to {tg.clip(seed or url, 80)}" if view == "similar" else "KaraokeGayak"
+    name = tg.clip(ev["meta"].get("event") or seed, 80) if view in ("event", "feedback") else ""
+    text = {"similar": f"Similar to {tg.clip(seed or url, 80)}", "home": "KaraokeGayak",
+            "events": "Your events", "new_event": "Plan a new event",
+            "event": f"Event: {name}", "feedback": f"Feedback: {name}"}[view]
     r = tg.send_web_app_button(text, "🎵 Open", f"{base}/?start={code}")
     if not r["success"]:
         return r | {"sent": False, "code": code}

@@ -100,6 +100,20 @@ This file defines the data format. Any agent or tool that reads or writes this r
 
 Copy `events/_TEMPLATE.md`. After an event, update `times_performed`, `crowd_score` and `last_performed` for every song in the set.
 
+The Mini App's Event Planner reads and writes the same files. It adds these front-matter keys (all optional):
+
+- `time`: `HH:MM` (24 h).
+- `song_count`: how many songs are planned.
+- `theme`: `;`-separated, usually `situation`/`theme` values, plus free text.
+- `instructions`: Neel's plain-English brief, as a quoted string.
+- `parsed_filters`: what the app read from the instructions, as one-line JSON.
+- `hidden`: `;`-separated song keys marked "not for this event".
+- `status`: `draft` (being built), `planned` (locked in), or `performed` (feedback done).
+
+The set-list table gains `Skipped` (`yes` when the song wasn't sung) and `Comment` (how it went) columns. A `song_id` cell may hold `yt:<video_id>` for a song outside the catalog. The app rewrites only the front matter, the set-list table, and the bullets under "Audience requests" and "What worked / what I'd change"; any other text is kept.
+
+`event_apply` counts events whose `status` is `performed` or missing (older files), never `draft` or `planned`, and leaves out skipped songs. Applying a draft or planned event marks it `performed`.
+
 ## Rules for any agent
 
 1. Read the file before writing; never rely on memory of its contents.

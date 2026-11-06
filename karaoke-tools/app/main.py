@@ -30,7 +30,7 @@ import vocab  # noqa: E402
 import youtube  # noqa: E402
 from common import is_youtube_url, state_root, telegram_chat_id, telegram_token  # noqa: E402
 
-from . import auth, jobs, similar  # noqa: E402
+from . import auth, events_api, jobs, similar  # noqa: E402
 
 STATIC = Path(__file__).resolve().parent / "static"
 YT_KEY_RE = re.compile(r"^yt:[A-Za-z0-9_-]{11}$")
@@ -423,6 +423,7 @@ def close(x_app_session: str = Header(default="")):
 
 
 app = FastAPI(title="KaraokeGayak", docs_url=None, redoc_url=None, openapi_url=None)
+api.include_router(events_api.router)
 app.include_router(api)
 
 

@@ -354,10 +354,13 @@ def relations_for(ref: str, limit: int = 10) -> dict:
 @tool
 def open_app(view: str = "similar", seed: str = "", url: str = "") -> dict:
     """Send Neel one short line with a 🎵 Open button that opens the Mini App
-    (the agent can't open it directly; Telegram needs a tap). view=similar opens
-    Suggest Similar for seed (a song title or song_id) or url (a YouTube link);
-    view=home opens the app's home/search. Use it for "songs like X" requests
-    once the app is set up. Returns {sent, code}."""
+    (the agent can't open it directly; Telegram needs a tap). Views:
+    similar: Suggest Similar for seed (a song title or song_id) or url (a
+    YouTube link), for "songs like X". home: search and recent seeds.
+    events: the events list ("show my events"). new_event: the new-event form
+    ("let's plan an event"). event: one event, seed = its id (the events/ file
+    name without .md). feedback: feedback for seed, or for the most recent past
+    event when seed is empty ("feedback of last event"). Returns {sent, code}."""
     return appstart.open_app(view, seed, url)
 
 

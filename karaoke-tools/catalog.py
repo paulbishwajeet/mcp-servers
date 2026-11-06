@@ -775,9 +775,12 @@ def _parse_front_matter(text: str) -> dict:
 
 
 def parse_event(path: Path) -> dict:
-    """Return {date, rows: [{song_id, title, outcome}], warnings} for one event file."""
+    """Return {date, status, rows: [{song_id, title, outcome}], warnings} for one
+    event file. Rows marked Skipped (Mini App feedback) are left out: they
+    weren't sung."""
     text = path.read_text(encoding="utf-8")
     meta = _parse_front_matter(text)
+    status = meta.get("status", "").strip('"').lower()
     warnings = []
     event_date = meta.get("date", "")
     if not (DATE_RE.match(event_date or "") and _valid_date(event_date)):
@@ -785,31 +788,36 @@ def parse_event(path: Path) -> dict:
         event_date = m.group(1) if m and _valid_date(m.group(1)) else ""
         if not event_date:
             warnings.append(f"{path.name}: no valid date in front matter or file name.")
+    out = {"date": event_date, "status": status, "rows": [], "warnings": warnings}
 
     section = re.search(r"^## Set list\s*\n(.*?)(?=^## |\Z)", text, re.S | re.M)
-    rows = []
+    rows = out["rows"]
     if not section:
         warnings.append(f"{path.name}: no '## Set list' section.")
-        return {"date": event_date, "rows": rows, "warnings": warnings}
+        return out
     table = [ln.strip() for ln in section.group(1).split("\n") if ln.strip().startswith("|")]
     if len(table) < 2:
-        return {"date": event_date, "rows": rows, "warnings": warnings}
+        return out
 
     def cells(line):
         return [c.strip() for c in line.strip().strip("|").split("|")]
 
     header = [h.lower() for h in cells(table[0])]
-    col = {name: header.index(name) for name in ("song_id", "title", "outcome") if name in header}
+    col = {name: header.index(name) for name in ("song_id", "title", "outcome", "skipped")
+           if name in header}
     if "song_id" not in col:
         warnings.append(f"{path.name}: set-list table has no song_id column.")
-        return {"date": event_date, "rows": rows, "warnings": warnings}
+        return out
     for line in table[1:]:
         if re.fullmatch(r"\|?[\s:|-]+\|?", line):  # separator row
             continue
         c = cells(line)
         get = lambda k: c[col[k]] if k in col and col[k] < len(c) else ""  # noqa: E731
-        sid, title, outcome = get("song_id").strip("` ").lower(), get("title"), get("outcome").lower()
+        sid, title, outcome = get("song_id").strip("` "), get("title"), get("outcome").lower()
+        sid = sid if sid.startswith("yt:") else sid.lower()  # YouTube ids are case-sensitive
         if not sid and not title:
+            continue
+        if get("skipped").lower() in ("yes", "true", "x", "✓", "skipped"):
             continue
         if outcome and outcome not in vocab.OUTCOME_SCORES:
             if "/" not in outcome:  # the template placeholder "standout / good / weak"
@@ -817,7 +825,7 @@ def parse_event(path: Path) -> dict:
                                 f"standout, good or weak; ignored.")
             outcome = ""
         rows.append({"song_id": sid, "title": title, "outcome": outcome})
-    return {"date": event_date, "rows": rows, "warnings": warnings}
+    return out
 
 
 def _valid_date(s: str) -> bool:
@@ -845,6 +853,12 @@ def event_apply(event_file: str) -> dict:
     with _lock:
         target = parse_event(path)
         warnings = list(target["warnings"])
+        if target["status"] in ("draft", "planned"):
+            # Applying an event means it happened: mark it performed so it counts.
+            text = path.read_text(encoding="utf-8")
+            atomic_write(path, re.sub(r"(?m)^status:.*$", "status: performed", text, count=1))
+            warnings.append(f"status was {target['status']}; set to performed.")
+            target["status"] = "performed"
         rows = load_songs()
         by_id = {r["song_id"]: r for r in rows}
         unmatched = [{"song_id": r["song_id"], "title": r["title"]}
@@ -855,6 +869,8 @@ def event_apply(event_file: str) -> dict:
         agg: dict[str, dict] = {sid: {"times": 0, "scores": [], "last": ""} for sid in target_ids}
         for ev_path in _event_files():
             ev = target if ev_path == path else parse_event(ev_path)
+            if ev["status"] in ("draft", "planned"):  # not happened yet (Mini App drafts)
+                continue
             for r in ev["rows"]:
                 a = agg.get(r["song_id"])
                 if a is None:

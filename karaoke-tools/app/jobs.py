@@ -15,6 +15,7 @@ from datetime import date
 import audio
 import cache
 import catalog
+import events
 import feedback
 import lookup
 import lyrics
@@ -139,6 +140,9 @@ def _add(job: dict, fields: dict, rating: int | None) -> None:
     if key.startswith("yt:"):
         similar.added_keys[key] = song_id
         feedback.relations_rekey(key, song_id)
+        moved = events.rekey_all(key, song_id)  # playlists of unfinished events
+        if moved:
+            _step(job, "events", True, f"{moved} event playlist(s) updated")
     catalog.review_add(song_id, "mini-app", "unsure-match", TAGS_PENDING)
     if row.get("karaoke_url"):
         analyse(job, song_id, row["karaoke_url"])
