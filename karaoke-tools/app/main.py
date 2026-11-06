@@ -8,6 +8,7 @@ song): no shell, no file paths, no URL fetching beyond allowlisted YouTube.
 The static front end in app/static is public; it holds no data.
 """
 
+import hashlib
 import json
 import re
 import threading
@@ -17,7 +18,7 @@ from pathlib import Path
 
 import requests
 from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import ROOT  # noqa: F401  (puts karaoke-tools on sys.path)
@@ -427,11 +428,31 @@ api.include_router(events_api.router)
 app.include_router(api)
 
 
+def asset_version() -> str:
+    """A short hash of app.js + app.css: a new URL for every code change, so
+    Telegram's in-app browser can't keep running an old copy."""
+    h = hashlib.sha1()
+    for name in ("app.js", "app.css"):
+        h.update((STATIC / name).read_bytes())
+    return h.hexdigest()[:10]
+
+
+@app.get("/", include_in_schema=False)
+@app.get("/index.html", include_in_schema=False)
+def index():
+    v = asset_version()
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    html = html.replace('href="app.css"', f'href="app.css?v={v}"').replace('src="app.js"', f'src="app.js?v={v}"')
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
+
 @app.middleware("http")
 async def no_store(request: Request, call_next):
     resp = await call_next(request)
     if request.url.path.startswith("/api/"):
         resp.headers["Cache-Control"] = "no-store"
+    elif "cache-control" not in resp.headers:
+        resp.headers["Cache-Control"] = "no-cache"  # always revalidate (ETag), never a stale app
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["Referrer-Policy"] = "no-referrer"
     return resp

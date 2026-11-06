@@ -154,6 +154,15 @@ def test_static_page_is_public_but_holds_no_data(client):
     assert client.get("/api/home").status_code == 401
 
 
+def test_page_never_runs_a_stale_app(client):
+    r = client.get("/")
+    v = main.asset_version()
+    assert f'src="app.js?v={v}"' in r.text and f'href="app.css?v={v}"' in r.text
+    assert r.headers["cache-control"] == "no-cache"
+    assert client.get(f"/app.js?v={v}").headers["cache-control"] == "no-cache"
+    assert client.get("/?start=abcdefgh").status_code == 200
+
+
 def test_no_docs_or_openapi(client):
     for path in ("/docs", "/redoc", "/openapi.json"):
         assert client.get(path).status_code == 404
