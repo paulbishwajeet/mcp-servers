@@ -40,13 +40,19 @@ Input: a seed song (title, or a YouTube link). The seed doesn't have to be in th
 2. **YouTube Mix section** (decided: **seed with the original song, show karaoke tracks**): the seed's YouTube Mix is fetched from the *original* song video (better variety), then each result is turned into its **karaoke track**: taken from the catalog if the song is there, otherwise looked up as "<title> karaoke" (Anil Chauhan channel index first, which is instant, then a YouTube search). Songs with no karaoke track found stay in the list marked "no karaoke track". The 10 best songs (YouTube + YouTube Music) that are **not** in the catalog, ranked by mix position and your like-links.
 3. Exclude the seed itself, duplicates, and jukebox/compilation videos.
 4. **[added] Speed:** karaoke lookups run in parallel and are cached per song, so only new songs cost a search. The catalog section shows immediately. The YouTube Mix section fills in a few seconds later with a loading indicator. Mix results are cached per seed for 24 hours, so Next, Back and re-opening are instant.
+5. **[added] 🎯 Your song, pinned on top.** However Suggest Similar opens (Home search, a chat `open_app` link, or ↪ Similar on a row), the seed itself is the first row, marked **🎯 Your song**, so you can play the exact track you had in mind straight away.
+   - **In the catalog:** pinned at the top of *From your catalog*, with its catalog karaoke link. It's there at once, before the YouTube Mix loads. A pasted YouTube link that is a catalog song's karaoke link (or an alternate link) counts as that catalog song.
+   - **Not in the catalog:** pinned at the top of *YouTube Mix (not in catalog)*, with its karaoke track found the usual way (`karaoke_find("<title> karaoke")`: Anil Chauhan index first, then a search). A pasted link plays that exact video. ↪ Similar on an outside row keeps the karaoke track that row was playing. The Original tab plays the original video the mix was seeded from.
+   - **No karaoke track found:** the row still shows, marked "No karaoke track found", with a **Search on YouTube** button (a YouTube search for "<title> karaoke").
+   - **Unsure match:** when the typed title closely matches more than one catalog song (the same title in another film, an unplugged or remix version), the best match is pinned and a small **Not this one?** link lists up to 3 alternatives. Picking one re-seeds the page. A seed given as an exact song id (↪ Similar on a catalog row) has no alternatives.
+   - The pinned row doesn't count toward the 10 songs per section, isn't repeated on Next pages, and stays on top when you come Back to this seed.
 
 ### 4.2 The list
-Two sections, **From your catalog** and **YouTube Mix (not in catalog)**, each 10 rows. Each row shows:
+Two sections, **From your catalog** and **YouTube Mix (not in catalog)**, each 10 rows (plus the 🎯 pinned row on the first page, §4.1). Each row shows:
 
 | Element | Behaviour |
 |---|---|
-| **Title** (link) | Opens the YouTube player (§4.3). **[added]** A small second line under the title: film · year · singer, plus a status badge (ready / practicing / wishlist) for catalog songs. |
+| **Title** (link) | Plays the song inside the app (§4.3). **[added]** A small second line under the title: film · year · singer, plus a status badge (ready / practicing / wishlist) for catalog songs. A small ↗ after the title means the video is known not to play inside the app: the tap opens YouTube straight away. |
 | **Energy** | 1–5 shown as a small bar or chip. **[added]** Plus a tempo label (slow / medium / fast). |
 | **Like** ♥ | Toggle (§4.4). |
 | **Favourite / rating** | Shows the current rating, e.g. ⭐8. Tap opens a 1–10 wheel picker (§4.5). |
@@ -54,11 +60,18 @@ Two sections, **From your catalog** and **YouTube Mix (not in catalog)**, each 1
 | **Edit** ✎ | Opens the edit sheet (§4.6). |
 | **[added] Why** ⓘ | Tap shows the ranking reasons, e.g. "mix #2 · both sources · ⭐9 · liked after Pal Pal". Optional, but helps you trust and tune the ranking. |
 
+**[added] The 🎯 pinned row** has play (title), rating, Edit (doubles as **Add to catalog** for outside songs) and **↗ Open in YouTube**. It has no ♥ Like (a song can't be linked to itself) and no ↪ Similar (it's already the seed).
+
 ### 4.3 Player
-- Tapping the title opens a **YouTube player overlay** above the list, with a fullscreen option. Closing it returns to the list at the same scroll position.
-- **Karaoke first:** the title opens the **karaoke track** (per the decision in §4.1). **[added]** An **Original** tab is also there, for hearing how the song goes.
-- **[added] Fallback:** some uploaders block embedding (your third test link, `TnDmK0ujJ-0`, did). For those the player shows **Open in YouTube**, which leaves Telegram.
-- Playback stops if Telegram goes to the background (a Telegram/iOS limitation).
+Songs play **inside the app**. The same player is used everywhere a song appears: Suggest Similar, Event Planner playlists and suggestions, and Event Feedback.
+
+- Tapping the title opens a **player overlay** above the list (a YouTube IFrame player), with a fullscreen option. Closing it (✕ or the Back button) stops the song and returns to the list at the same scroll position.
+- **Karaoke first:** the title plays the **karaoke track** (per the decision in §4.1). **[added]** An **Original** tab plays the original song video.
+- **[added] Mini player:** ▾ shrinks the player to a bar at the bottom, and the song keeps playing while you like, rate or scroll the list behind it. ⤢ opens it again; ✕ stops it.
+- **[added] Open in YouTube** is always visible in the overlay. It uses Telegram's `openLink`, so Telegram opens the YouTube app or the browser; the Mini App itself never navigates away.
+- **[added] Automatic fallback:** when the player reports an error (100 removed/private, 101 or 150 embedding disabled, 153 no referrer) or isn't ready within ~8 seconds, the player is replaced by "This video can't play inside the app" and a big **Open in YouTube** button. The server's oEmbed check (401/403) triggers the same fallback. Videos that fail with 100/101/150 or oEmbed are remembered on the phone for 30 days, so next time their rows show a small ↗ and open YouTube straight away. A timeout or a referrer problem isn't remembered, because it's about the network or page, not the video.
+- **[added] Webview details:** the page sends `Referrer-Policy: strict-origin-when-cross-origin` (YouTube rejects embeds with no referrer, error 153). On error 153 the player retries once on `youtube-nocookie.com`, and keeps using that host if it works. The embed uses `playsinline=1`, `rel=0`, `modestbranding=1` and `origin=<APP_URL>`, with `allow="autoplay; encrypted-media; fullscreen; picture-in-picture"`. Playback starts only from your tap (no autoplay).
+- Playback pauses when the overlay closes or Telegram goes to the background.
 
 ### 4.4 Like (your liking network)
 - Tapping ♥ links the seed → the liked song in the database. Unliked songs are not linked at all, as in your spec.

@@ -191,3 +191,32 @@ a { color: var(--link); text-decoration: none; }
 .form-view .field input, .form-view .field select, .form-view .field textarea { background: var(--section); border-color: transparent; }
 .form-view .chip { background: var(--section); }
 .form-view .chip.on { background: var(--button); }
+
+/* --- player: loading, Open in YouTube, mini bar --- */
+.player-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: #ddd; font-size: 14px; pointer-events: none; }
+.player-foot { padding: 8px 12px 12px; }
+.player-foot .btn { width: 100%; }
+.btn.big { min-height: 52px; font-size: 17px; padding: 0 24px; }
+.player-fallback p { margin: 4px 0 14px; }
+.mini-ctl { display: none; }
+#player.mini { inset: auto 0 0 0; background: none; padding: 0 0 env(safe-area-inset-bottom); align-items: flex-end; pointer-events: none; }
+#player.mini .player-box { pointer-events: auto; display: flex; align-items: center; gap: 8px; border-radius: 14px 14px 0 0;
+  padding: 6px 8px; box-shadow: 0 -2px 12px #0003; }
+#player.mini .player-tabs, #player.mini .player-title, #player.mini .player-foot, #player.mini .player-fallback { display: none; }
+#player.mini .player-frame { width: 128px; flex-shrink: 0; border-radius: 8px; overflow: hidden; }
+#player.mini .mini-ctl { display: flex; align-items: center; flex: 1; min-width: 0; }
+.mini-title { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+body.has-mini { padding-bottom: calc(env(safe-area-inset-bottom) + 96px); }
+body.has-mini .toast { bottom: calc(env(safe-area-inset-bottom) + 96px); }
+.title .ext { color: var(--hint); font-weight: 400; }
+
+/* --- 🎯 pinned seed row --- */
+.item.pinned { background: color-mix(in srgb, var(--button) 8%, var(--section)); }
+.item.pinned .pin { font-size: 12px; font-weight: 700; color: var(--link); margin-bottom: 2px; }
+.nokaraoke { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.link.small { font-size: 13px; min-height: 32px; padding: 0; font-weight: 500; }
+.alts button { display: block; width: 100%; text-align: left; padding: 8px 10px; min-height: var(--tap);
+  border-radius: 10px; background: var(--bg2); margin: 4px 0; font-size: 14px; }
+.alts .sub { color: var(--hint); font-size: 12px; }

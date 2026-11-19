@@ -204,14 +204,19 @@ def _similar_out(s: similar.Session, page: int, with_mix: bool) -> dict:
            "catalog": similar.catalog_page(s, page), "mix": s.mix_status, "warnings": s.warnings}
     if with_mix:
         out["outside"] = similar.outside_page(s, page)
+    if page == 0:  # 🎯 the seed itself, only on the first page
+        out["pinned"] = similar.pinned_out(s)
     return out
 
 
 @api.get("/similar")
 def get_similar(seed: str = Query("", max_length=200), url: str = Query("", max_length=300),
-                page: int = Query(0, ge=0, le=50), x_app_session: str = Header(default="")):
+                page: int = Query(0, ge=0, le=50), karaoke: str = Query("", max_length=300),
+                x_app_session: str = Header(default="")):
     seed, url = _seed_args(seed, url)
-    s = similar.open_session(seed, url)
+    if karaoke and not is_youtube_url(karaoke):
+        raise HTTPException(status_code=400, detail="karaoke must be a YouTube link.")
+    s = similar.open_session(seed, url, karaoke.strip())
     if page == 0:
         _remember(seed, url, s.seed_title)
     a = _act(x_app_session)
@@ -432,7 +437,7 @@ def asset_version() -> str:
     """A short hash of app.js + app.css: a new URL for every code change, so
     Telegram's in-app browser can't keep running an old copy."""
     h = hashlib.sha1()
-    for name in ("app.js", "app.css"):
+    for name in ("player.js", "app.js", "app.css"):
         h.update((STATIC / name).read_bytes())
     return h.hexdigest()[:10]
 
@@ -442,7 +447,8 @@ def asset_version() -> str:
 def index():
     v = asset_version()
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    html = html.replace('href="app.css"', f'href="app.css?v={v}"').replace('src="app.js"', f'src="app.js?v={v}"')
+    for name in ("app.css", "player.js", "app.js"):
+        html = html.replace(f'"{name}"', f'"{name}?v={v}"')
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
@@ -454,7 +460,9 @@ async def no_store(request: Request, call_next):
     elif "cache-control" not in resp.headers:
         resp.headers["Cache-Control"] = "no-cache"  # always revalidate (ETag), never a stale app
     resp.headers["X-Content-Type-Options"] = "nosniff"
-    resp.headers["Referrer-Policy"] = "no-referrer"
+    # YouTube refuses embeds that send no referrer (error 153): send our origin
+    # only (never the path or query) to other sites.
+    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     return resp
 
 

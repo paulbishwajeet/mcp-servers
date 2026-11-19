@@ -533,3 +533,88 @@ def test_close_with_nothing_saved_sends_nothing(client, telegram):
     assert telegram.messages == []
     r = client.post("/api/session/close", headers={"X-Telegram-Init-Data": init_data()})
     assert r.status_code == 400  # no X-App-Session
+
+
+# --- 🎯 pinned seed row ---------------------------------------------------------------------------
+
+def similar_page(client, page=0, **params):
+    r = client.get("/api/similar", params=params | {"page": page}, headers=HEADERS)
+    assert r.status_code == 200, r.text
+    r = r.json()
+    if "outside" not in r:
+        r = wait_mix(client, r["session"], page)
+    return r
+
+
+def test_pinned_catalog_seed_is_first_with_its_karaoke_link(client, songs, mix):
+    r = client.get("/api/similar", params={"seed": "Pal Pal Dil Ke Paas"}, headers=HEADERS).json()
+    p = r["pinned"]  # there at once, before the mix
+    assert p["pinned"] and p["group"] == "catalog" and p["catalog_id"] == songs["ref"]
+    assert p["title"] == "Pal Pal Dil Ke Paas" and p["karaoke_url"].endswith("pw6r-izZArA")
+    assert p["karaoke"] == "found" and "liked" not in p and p["reasons"] == "🎯 your song"
+    m = wait_mix(client, r["session"])
+    assert m["pinned"]["catalog_id"] == songs["ref"]
+    keys = [it["song_key"] for it in m["catalog"]["items"] + m["outside"]["items"]]
+    assert songs["ref"] not in keys            # not repeated in the lists
+    assert len(m["catalog"]["items"]) <= 10    # and doesn't take a slot
+    assert "pinned" not in wait_mix(client, r["session"], page=1)  # not on Next pages
+
+
+def test_pinned_outside_seed_gets_its_karaoke_track(client, songs, mix):
+    r = similar_page(client, seed="Chalte Chalte")
+    p = r["pinned"]
+    assert p["group"] == "outside" and p["title"] == "Chalte Chalte" and p["catalog_id"] == ""
+    assert p["karaoke"] == "found" and p["karaoke_url"].endswith("karaokeCC01")  # index first
+    assert p["song_key"] == "yt:seedVIDEO01" and p["video_url"].endswith("seedVIDEO01")  # the original
+    assert "Chalte Chalte" in mix["finds"]
+    assert "Chalte Chalte" not in [it["title"] for it in r["outside"]["items"]]
+    # Rating it asks to add it, like any outside song.
+    rr = client.post("/api/rating", headers=HEADERS, json={"song_key": p["song_key"], "rating": 8}).json()
+    assert rr["needs_add"]
+
+
+def test_pinned_seed_without_karaoke_track_offers_a_search(client, songs, mix):
+    p = similar_page(client, seed="Kya Hua Tera Wada")["pinned"]
+    assert p["karaoke"] == "none" and p["karaoke_url"] == ""
+    assert p["search_url"] == "https://www.youtube.com/results?search_query=Kya+Hua+Tera+Wada+karaoke"
+    assert p["video_url"].endswith("seedVIDEO01")  # the original still plays
+
+
+def test_pinned_ambiguous_title_lists_alternatives(client, songs, mix):
+    a = add(title="Mere Sapnon Ki Rani", film="Aradhana", year=1969, status="ready")
+    b = add(title="Mere Sapnon Ki Rani", film="Remake", year=2005, status="wishlist")
+    r = client.get("/api/similar", params={"seed": "Mere Sapnon Ki Rani"}, headers=HEADERS).json()
+    p = r["pinned"]
+    assert p["catalog_id"] == a  # the best match: better status
+    assert [x["song_id"] for x in p["alternatives"]] == [b]
+    assert p["alternatives"][0]["film"] == "Remake"
+    # Picking the alternative re-seeds with its song_id: exact, so no alternatives.
+    r2 = client.get("/api/similar", params={"seed": b}, headers=HEADERS).json()
+    assert r2["pinned"]["catalog_id"] == b and r2["pinned"]["alternatives"] == []
+
+
+def test_pinned_from_a_pasted_link(client, songs, mix):
+    # A catalog song's karaoke link pins that catalog song.
+    r = client.get("/api/similar", params={"url": "https://youtu.be/pw6r-izZArA"}, headers=HEADERS).json()
+    assert r["pinned"]["catalog_id"] == songs["ref"] and r["seed"]["in_catalog"]
+    # Any other link pins that exact video as the track to play.
+    p = similar_page(client, url="https://www.youtube.com/watch?v=lsE__bt5FX8")["pinned"]
+    assert p["group"] == "outside" and p["karaoke_url"].endswith("lsE__bt5FX8")
+
+
+def test_pinned_from_a_row_keeps_the_track_it_was_playing(client, songs, mix):
+    p = similar_page(client, seed="Chalte Chalte", url="https://www.youtube.com/watch?v=outsideAAA1",
+                     karaoke="https://www.youtube.com/watch?v=karaokeXX99")["pinned"]
+    assert p["karaoke_url"].endswith("karaokeXX99") and p["video_url"].endswith("outsideAAA1")
+    assert client.get("/api/similar", params={"seed": "x", "karaoke": "https://evil.example/v"},
+                      headers=HEADERS).status_code == 400
+
+
+def test_youtube_gets_a_referrer(client):
+    # YouTube rejects embeds without a referrer (error 153): send our origin only.
+    r = client.get("/")
+    assert r.headers["referrer-policy"] == "strict-origin-when-cross-origin"
+    assert '<meta name="referrer" content="strict-origin-when-cross-origin">' in r.text
+    v = main.asset_version()
+    assert f'src="player.js?v={v}"' in r.text
+    assert r.text.index('src="player.js') < r.text.index('src="app.js')  # KGPlayer exists before app.js runs

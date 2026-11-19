@@ -123,10 +123,11 @@ function updateChrome() {
   }
 }
 
-function overlayOpen() { return !$("player").hidden || !$("rating").hidden || !$("edit").hidden; }
+function playerFull() { return !$("player").hidden && !$("player").classList.contains("mini"); }
+function overlayOpen() { return playerFull() || !$("rating").hidden || !$("edit").hidden; }
 
 function onBack() {
-  if (!$("player").hidden) return closePlayer();
+  if (playerFull()) return closePlayer();
   if (!$("rating").hidden) return closeSheet("rating");
   if (!$("edit").hidden) return closeSheet("edit");
   pop();
@@ -208,9 +209,10 @@ function homeView() {
 
 // --- Suggest Similar -----------------------------------------------------------------------------
 
-function similarView({ seed = "", url = "", title = "", event = null }) {
+function similarView({ seed = "", url = "", title = "", event = null, karaoke = "" }) {
   // event: {id, name} when opened from an event page: rows get "＋ Event".
-  const v = { kind: "similar", seed, url, title: title || seed || url, page: 0, data: null, token: 0, event };
+  // karaoke: the exact track the row was playing, for the 🎯 pinned row.
+  const v = { kind: "similar", seed, url, karaoke, title: title || seed || url, page: 0, data: null, token: 0, event };
   v.render = () => loadPage(v, 0);
   return v;
 }
@@ -221,7 +223,7 @@ async function loadPage(v, page) {
   fill(v.el, el("h1", { text: v.title }), el("div", { class: "empty loading" }));
   let r;
   try {
-    r = await api(`/api/similar?${qs({ seed: v.seed, url: v.url, page })}`);
+    r = await api(`/api/similar?${qs({ seed: v.seed, url: v.url, karaoke: v.karaoke, page })}`);
   } catch (e) {
     if (e.status === 401) return;
     fill(v.el, el("h1", { text: v.title }), el("div", { class: "notice", text: e.message }),
@@ -246,6 +248,7 @@ async function pollMix(v, page, token) {
     if (token !== v.token || v.closed) return;
     if (r.mix === "loading") continue;
     const y = window.scrollY;
+    if (!r.pinned && v.data && v.data.pinned && page === 0) r.pinned = v.data.pinned;
     v.data = r;
     v.title = r.seed.title || v.title;
     updateChrome();
@@ -256,8 +259,48 @@ async function pollMix(v, page, token) {
   if (token === v.token && v.data) { v.data.mix = "error"; v.data.outside = { items: [], end: true }; renderSimilar(v); }
 }
 
+// 🎯 The seed itself, first in its section on page 1: play, rate, edit (or add)
+// and open in YouTube. No ♥ (a song can't be linked to itself), no ↪ (it's the seed).
+function pinnedRow(v, p) {
+  p._render = pinnedRow;
+  p.song_key = p.song_key || (KG.videoId(p.karaoke_url) ? `yt:${KG.videoId(p.karaoke_url)}` : "");
+  const inCat = !!p.catalog_id;
+  const badge = adding[p.song_key] ? el("span", { class: "badge adding", text: "adding…" })
+    : inCat && p.status ? el("span", { class: `badge ${p.status}`, text: p.status }) : null;
+  const alts = p.alternatives || [];
+  const altBox = el("div", { class: "alts", hidden: true }, alts.map((a) => el("button", { type: "button",
+    onclick: () => reseed(v, a.song_id, a.title) }, a.title, el("span", { class: "sub", text: ` ${[a.film, a.year].filter(Boolean).join(" · ")}` }))));
+  const row = el("div", { class: "item pinned" },
+    el("div", { class: "pin", text: "🎯 Your song" }),
+    el("div", { class: "top" }, primaryUrl(p) ? titleLink(v, p) : el("div", { class: "title", text: p.title }), badge),
+    el("div", { class: "sub", text: [p.film, p.year, singers(p.singers)].filter(Boolean).join(" · ") }),
+    p.karaoke === "none" ? el("div", { class: "nokaraoke" },
+      el("span", { class: "badge warn", text: "No karaoke track found" }),
+      el("button", { type: "button", class: "btn small secondary", onclick: () => openYouTube(p.search_url) }, "Search on YouTube")) : null,
+    alts.length ? el("button", { type: "button", class: "link small", onclick: () => { altBox.hidden = !altBox.hidden; } }, "Not this one?") : null,
+    altBox,
+    el("div", { class: "bottom" },
+      el("div", { class: "meta" }, energyBar(p.energy), p.tempo_class ? el("span", { text: p.tempo_class }) : null),
+      el("div", { class: "actions" },
+        p.song_key || inCat ? el("button", { type: "button", class: "rate", "aria-label": "Rating", onclick: () => openRating(v, p) },
+          p.my_rating ? `⭐${p.my_rating}` : "☆") : null,
+        p.song_key || inCat ? el("button", { type: "button", title: inCat ? "Edit" : "Add to catalog", "aria-label": "Edit",
+          onclick: () => openEdit(v, p) }, "✎") : null,
+        primaryUrl(p) ? el("button", { type: "button", title: "Open in YouTube", "aria-label": "Open in YouTube",
+          onclick: () => openYouTube(primaryUrl(p)) }, "↗") : null)));
+  p.el = row;
+  return row;
+}
+
+function reseed(v, seed, title) {
+  v.seed = seed; v.url = ""; v.karaoke = ""; v.title = title; v.data = null;
+  updateChrome();
+  loadPage(v, 0);
+}
+
 function renderSimilar(v) {
   const d = v.data;
+  const pin = v.page === 0 && d.pinned ? d.pinned : null;
   const sub = [d.seed.film, d.seed.year, d.seed.in_catalog ? "in your catalog" : "not in catalog"].filter(Boolean).join(" · ");
   const cat = d.catalog;
   const catList = el("div", { class: "list" },
@@ -265,6 +308,7 @@ function renderSimilar(v) {
       text: v.page > 0 ? "No more catalog matches" : (d.seed.in_catalog || d.mix !== "loading"
         ? "No catalog matches" : "Waiting for the YouTube Mix…") }));
   if (cat.items.length && cat.end) catList.append(el("div", { class: "empty", text: "No more catalog matches" }));
+  if (pin && pin.group === "catalog") catList.prepend(pinnedRow(v, pin));
   let outList;
   if (!d.outside) {
     outList = el("div", { class: "list" }, el("div", { class: "empty loading" }, "Loading YouTube Mix… "));
@@ -273,6 +317,7 @@ function renderSimilar(v) {
     outList = el("div", { class: "list" }, o.items.length ? o.items.map((it) => renderItem(v, it))
       : el("div", { class: "empty", text: d.mix === "error" ? "YouTube Mix unavailable right now" : "End of YouTube Mix" }));
     if (o.items.length && o.end) outList.append(el("div", { class: "empty", text: "End of YouTube Mix" }));
+    if (pin && pin.group === "outside") outList.prepend(pinnedRow(v, pin));
   }
   const mixDone = !!d.outside;
   const nextOff = cat.end && (!mixDone || d.outside.end);
@@ -304,7 +349,7 @@ function renderItem(v, it) {
   const why = el("div", { class: "why", hidden: true, text: it.reasons || "No ranking reasons recorded." });
   const row = el("div", { class: "item" },
     el("div", { class: "top" },
-      el("a", { class: "title", href: "#", onclick: (e) => { e.preventDefault(); openPlayer(it); } }, it.title),
+      titleLink(v, it),
       badge),
     el("div", { class: "sub", text: [it.film, it.year, singers(it.singers)].filter(Boolean).join(" · ") }),
     why,
@@ -317,7 +362,8 @@ function renderItem(v, it) {
         onclick: () => openRating(v, it) }, it.my_rating ? `⭐${it.my_rating}` : "☆"),
       el("button", { type: "button", "aria-label": "Similar", title: "Similar",
         onclick: () => push(similarView({ seed: it.catalog_id || it.title,
-          url: it.catalog_id ? "" : (it.video_url || ""), title: it.title, event: v.event })) }, "↪"),
+          url: it.catalog_id ? "" : (it.video_url || ""), title: it.title, event: v.event,
+          karaoke: it.catalog_id ? "" : (it.karaoke_url || "") })) }, "↪"),
       v.event ? el("button", { type: "button", class: `add${it.inEvent ? " on" : ""}`, title: `Add to ${v.event.name}`,
         "aria-label": "Add to event", onclick: () => addToEvent(v, it) }, it.inEvent ? "✓" : "＋") : null,
       el("button", { type: "button", "aria-label": "Edit", title: "Edit", onclick: () => openEdit(v, it) }, "✎"),
@@ -624,32 +670,104 @@ async function reanalyse(songId) {
 }
 
 // --- player ----------------------------------------------------------------------------------------
+// Songs play inside the app (an overlay with a YouTube player; ▾ keeps it playing
+// in a bar at the bottom). Fallback logic lives in player.js (unit-tested).
 
+const KG = window.KGPlayer;
+const safeStorage = () => { try { return window.localStorage; } catch (_) { return null; } };
+const embedCache = new KG.EmbedCache(safeStorage());
 let ytReady = null;
-let ytPlayer = null;
-let playerCtx = null;
+let playerCtx = null;   // {it, v, karaoke, original, tab, current}
 
 function loadYT() {
   if (!ytReady) ytReady = new Promise((resolve, reject) => {
-    window.onYouTubeIframeAPIReady = () => resolve(window.YT);
+    if (window.YT && window.YT.Player) return resolve(window.YT);
+    const t = setTimeout(() => { ytReady = null; reject(new Error("timeout")); }, KG.READY_TIMEOUT_MS);
+    window.onYouTubeIframeAPIReady = () => { clearTimeout(t); resolve(window.YT); };
     const s = el("script", { src: "https://www.youtube.com/iframe_api" });
-    s.onerror = () => { ytReady = null; reject(new Error("YouTube player didn't load")); };
+    s.onerror = () => { clearTimeout(t); ytReady = null; reject(new Error("load")); };
     document.head.append(s);
   });
   return ytReady;
 }
 
-function videoId(url) {
-  const m = /(?:v=|youtu\.be\/|\/shorts\/|\/embed\/|\/live\/)([A-Za-z0-9_-]{11})/.exec(url || "");
-  return m ? m[1] : "";
+// Our own iframe, so the referrer policy and allow list apply from the first load.
+function mountYT(id, host, h) {
+  const box = $("yt");
+  const iframe = el("iframe", { src: KG.embedSrc(id, host, location.origin), title: "YouTube player",
+    allow: "autoplay; encrypted-media; fullscreen; picture-in-picture", allowfullscreen: true,
+    referrerpolicy: "strict-origin-when-cross-origin", frameborder: "0" });
+  fill(box, iframe);
+  const p = new window.YT.Player(iframe, { events: {
+    onReady: () => { h.onReady(); try { p.playVideo(); } catch (_) { /* iOS may want a tap on the player */ } },
+    onError: (e) => h.onError(e.data),
+    onStateChange: (e) => h.onStateChange(e.data) } });
+  return {
+    playVideo: () => p.playVideo && p.playVideo(),
+    pauseVideo: () => p.pauseVideo && p.pauseVideo(),
+    destroy: () => { try { p.destroy(); } catch (_) { /* gone */ } fill(box); },
+  };
 }
 
-function openPlayer(it) {
-  playerCtx = { it, karaoke: it.karaoke_url || "", original: it.video_url || "" };
+const player = new KG.PlayerController({
+  cache: embedCache, hosts: new KG.HostStore(safeStorage()), mount: mountYT,
+  setTimer: (fn, ms) => setTimeout(fn, ms), clearTimer: (t) => clearTimeout(t),
+  onState: onPlayerState,
+});
+
+const FALLBACK_TEXT = {
+  timeout: "The player didn't load. Open the video in YouTube instead.",
+  load: "The YouTube player couldn't load here. Open the video in YouTube instead.",
+  100: "This video isn't available on YouTube any more (removed or private).",
+  "no-video": "No video link for this song.",
+};
+
+function onPlayerState(state, info) {
+  if (!playerCtx) return;
+  $("player-loading").hidden = state !== "loading";
+  if (state === "fallback") {
+    $("player-frame").hidden = true;
+    $("player-fallback").hidden = false;
+    $("player-fallback-text").textContent = FALLBACK_TEXT[info.reason] || "This video can't play inside the app.";
+    $("player-open-big").hidden = !playerCtx.current;
+    if (embedCache.has(info.videoId) && playerCtx.v) refresh(playerCtx.v, playerCtx.it);  // the row gets ↗ now
+  }
+}
+
+function watchUrl(url) {
+  const id = KG.videoId(url);
+  return id ? `https://www.youtube.com/watch?v=${id}` : url;
+}
+
+// Leaves Telegram for the YouTube app or browser; the mini app itself never navigates away.
+function openYouTube(url) {
+  if (!url) return;
+  player.pause();
+  if (WA && WA.openLink) WA.openLink(watchUrl(url)); else window.open(watchUrl(url), "_blank", "noopener");
+}
+
+function primaryUrl(it) { return it.karaoke_url || it.video_url || ""; }
+function blocked(url) { return !!url && embedCache.has(KG.videoId(url)); }
+
+// The song title link used in every list: plays in the app, or opens YouTube
+// straight away (↗) when we already know the video can't play embedded.
+function titleLink(v, it) {
+  const url = primaryUrl(it);
+  const ext = blocked(url) && (!it.video_url || it.video_url === url || blocked(it.video_url));
+  return el("a", { class: "title", href: "#", onclick: (e) => {
+    e.preventDefault();
+    if (ext) openYouTube(url); else openPlayer(it, v);
+  } }, it.title, ext ? el("span", { class: "ext", title: "Opens in YouTube" }, " ↗") : null);
+}
+
+function openPlayer(it, v) {
+  playerCtx = { it, v, karaoke: it.karaoke_url || "", original: it.video_url || "" };
   const kt = document.querySelector('[data-tab="karaoke"]');
   kt.disabled = !playerCtx.karaoke;
   kt.textContent = playerCtx.karaoke ? "Karaoke" : "No karaoke";
   $("player").hidden = false;
+  $("player").classList.remove("mini");
+  document.body.classList.remove("has-mini");
   $("player-fs").hidden = !(document.fullscreenEnabled || document.webkitFullscreenEnabled ||
     (WA && WA.requestFullscreen && WA.isVersionAtLeast && WA.isVersionAtLeast("8.0")));
   updateChrome();
@@ -658,62 +776,87 @@ function openPlayer(it) {
 
 async function playTab(tab) {
   const ctx = playerCtx;
+  ctx.tab = tab;
   for (const b of document.querySelectorAll(".player-tabs .tab")) b.classList.toggle("on", b.dataset.tab === tab);
   $("player-fallback").hidden = true;
   $("player-frame").hidden = false;
-  $("player-title").textContent = ctx.it.title + (tab === "original" ? " · original" : " · karaoke");
+  $("player-loading").hidden = false;
+  const label = ctx.it.title + (tab === "original" ? " · original" : " · karaoke");
+  $("player-title").textContent = label;
+  $("mini-title").textContent = label;
   let url = ctx[tab];
+  ctx.current = url;
+  setOpenButtons(url);
   if (!url && tab === "original") {
     $("player-title").textContent = "Finding the original video…";
     try {
       const r = await api(`/api/original?${qs({ title: ctx.it.title, film: ctx.it.film })}`);
-      url = ctx.original = r.url;
-    } catch (e) { return fallback("", "Couldn't find the original video."); }
-    if (ctx !== playerCtx) return;
-    $("player-title").textContent = ctx.it.title + " · original";
+      url = ctx.original = ctx.current = r.url;
+    } catch (e) { url = ""; }
+    if (ctx !== playerCtx || ctx.tab !== tab) return;
+    $("player-title").textContent = label;
+    setOpenButtons(url);
   }
-  const id = videoId(url);
-  if (!id) return fallback(url, "No video link for this song.");
-  ctx.current = url;
-  api(`/api/embeddable?${qs({ url })}`).then((r) => {
-    if (r.embeddable === false && ctx === playerCtx && ctx.current === url) fallback(url);
-  }).catch(() => {});
+  const id = KG.videoId(url);
+  if (id && !embedCache.has(id)) {
+    // Server-side oEmbed check in parallel: 401/403 = embedding disabled.
+    api(`/api/embeddable?${qs({ url })}`).then((r) => {
+      if (r.embeddable === false && ctx === playerCtx && ctx.current === url) player.notEmbeddable(id);
+    }).catch(() => {});
+  }
   try {
-    const YT = await loadYT();
-    if (ctx !== playerCtx) return;
-    if (!ytPlayer) {
-      ytPlayer = new YT.Player("yt", { videoId: id, playerVars: { playsinline: 1, rel: 0, fs: 1, modestbranding: 1 },
-        events: { onError: (e) => { if ([2, 5, 100, 101, 150].includes(e.data) && playerCtx) fallback(playerCtx.current); } } });
-    } else ytPlayer.loadVideoById(id);
-  } catch (e) { fallback(url, e.message); }
+    if (id && !embedCache.has(id)) await loadYT();
+  } catch (e) {
+    if (ctx === playerCtx && ctx.current === url) { player.stop(); onPlayerState("fallback", { reason: e.message, videoId: id }); }
+    return;
+  }
+  if (ctx !== playerCtx || ctx.current !== url) return;
+  player.play(url);
 }
 
-function fallback(url, text) {
-  try { ytPlayer && ytPlayer.stopVideo && ytPlayer.stopVideo(); } catch (_) { /* not ready */ }
-  $("player-frame").hidden = true;
-  $("player-fallback").hidden = false;
-  $("player-fallback-text").textContent = text || "The uploader doesn't allow playing this video inside Telegram.";
-  $("player-open").hidden = !url;
-  $("player-open").onclick = () => { if (WA && WA.openLink) WA.openLink(url); else window.open(url, "_blank", "noopener"); };
+function setOpenButtons(url) {
+  $("player-open").disabled = !url;
+  $("player-open").onclick = () => openYouTube(url);
+  $("player-open-big").onclick = () => openYouTube(url);
 }
 
 function closePlayer() {
-  try { ytPlayer && ytPlayer.stopVideo && ytPlayer.stopVideo(); } catch (_) { /* not ready */ }
+  player.stop();   // pauses and removes the player
   playerCtx = null;
   $("player").hidden = true;
+  $("player").classList.remove("mini");
+  document.body.classList.remove("has-mini");
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  updateChrome();
+}
+
+// ▾: keep the song playing in a bar at the bottom while you like or rate.
+function minimisePlayer() {
+  if (!playerCtx) return;
+  if (player.state !== "ready") return closePlayer();   // nothing playing: just close
+  $("player").classList.add("mini");
+  document.body.classList.add("has-mini");
+  updateChrome();
+}
+
+function expandPlayer() {
+  $("player").classList.remove("mini");
+  document.body.classList.remove("has-mini");
   updateChrome();
 }
 
 for (const b of document.querySelectorAll(".player-tabs .tab")) b.onclick = () => { if (!b.disabled && playerCtx) playTab(b.dataset.tab); };
 $("player-close").onclick = closePlayer;
+$("player-min").onclick = minimisePlayer;
+$("mini-expand").onclick = expandPlayer;
+$("mini-close").onclick = closePlayer;
 $("player-fs").onclick = () => {
   const f = $("player-frame");
   if (f.requestFullscreen) f.requestFullscreen().catch(() => {});
   else if (f.webkitRequestFullscreen) f.webkitRequestFullscreen();
   else if (WA && WA.requestFullscreen) WA.requestFullscreen();
 };
-$("player").addEventListener("click", (e) => { if (e.target.id === "player") closePlayer(); });
+$("player").addEventListener("click", (e) => { if (e.target.id === "player" && !$("player").classList.contains("mini")) closePlayer(); });
 
 // --- Event Planner (spec §5) ---------------------------------------------------------------------
 
@@ -895,7 +1038,7 @@ function eventRow(v, it, kind) {
     it.my_rating ? `⭐${it.my_rating}` : "☆"));
   acts.push(el("button", { type: "button", title: "Similar", "aria-label": "Similar", onclick: () => push(similarView({
     seed: it.catalog_id || it.title, url: it.catalog_id ? "" : (it.video_url || ""), title: it.title,
-    event: editableEv ? v.event : null })) }, "↪"));
+    karaoke: it.catalog_id ? "" : (it.karaoke_url || ""), event: editableEv ? v.event : null })) }, "↪"));
   acts.push(el("button", { type: "button", title: "Edit", "aria-label": "Edit", onclick: () => openEdit(v, it) }, "✎"));
   if (it.reasons) acts.push(el("button", { type: "button", title: "Why", "aria-label": "Why", onclick: () => { why.hidden = !why.hidden; } }, "ⓘ"));
   if (editableEv) acts.push(el("button", { type: "button", class: "x", title: kind === "playlist" ? "Remove" : "Not for this event",
@@ -904,7 +1047,7 @@ function eventRow(v, it, kind) {
     el("div", { class: "top" },
       kind === "playlist" && editableEv ? el("span", { class: "handle", title: "Drag to reorder", "aria-label": "Drag to reorder" }, "≡") : null,
       kind === "playlist" ? el("span", { class: "num", text: `${v.data.playlist.indexOf(it) + 1}.` }) : null,
-      el("a", { class: "title", href: "#", onclick: (e) => { e.preventDefault(); openPlayer(it); } }, it.title), badge),
+      titleLink(v, it), badge),
     el("div", { class: "sub", text: [it.film, it.year, singers(it.singers), it.duration_sec ? fmtMin(+it.duration_sec).replace(" min", "′") : ""].filter(Boolean).join(" · ") }),
     warn.length ? el("div", { class: "warns" }, warn) : null,
     why,
@@ -1163,7 +1306,7 @@ function feedbackRow(v, it, n) {
   comment.addEventListener("input", () => { clearTimeout(t); t = setTimeout(() => { it.comment = comment.value; saveFeedback(v, { song_key: it.key, comment: comment.value }, true); }, 800); });
   const row = el("div", { class: `item fb${it.skipped ? " skipped" : ""}` },
     el("div", { class: "top" }, el("span", { class: "num", text: `${n}.` }),
-      el("a", { class: "title", href: "#", onclick: (e) => { e.preventDefault(); openPlayer(it); } }, it.title),
+      titleLink(v, it),
       el("button", { type: "button", class: "rate", onclick: () => openRating(v, it) }, it.my_rating ? `⭐${it.my_rating}` : "☆")),
     el("div", { class: "sub", text: [it.film, it.year, singers(it.singers)].filter(Boolean).join(" · ") }),
     outcome, el("div", { class: "fb-line" }, comment, skip));
@@ -1216,7 +1359,10 @@ async function boot() {
     try { if (WA.disableVerticalSwipes && WA.isVersionAtLeast("7.7")) WA.disableVerticalSwipes(); } catch (_) { /* old client */ }
   }
   // Best effort: a summary line when Telegram hides or closes the app without Done.
-  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") closeSession(true); });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") { player.pause(); closeSession(true); }
+  });
+  try { if (WA && WA.onEvent) WA.onEvent("deactivated", () => player.pause()); } catch (_) { /* old client */ }
   window.addEventListener("pagehide", () => closeSession(true));
 
   push(homeView());

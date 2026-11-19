@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="referrer" content="no-referrer">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
   <title>KaraokeGayak</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <link rel="stylesheet" href="app.css">
@@ -17,7 +17,7 @@
     <button id="toast-undo" class="link" type="button" hidden>Undo</button>
   </div>
 
-  <!-- player overlay -->
+  <!-- player overlay; with .mini it becomes a bar at the bottom and keeps playing -->
   <div id="player" class="overlay" hidden>
     <div class="player-box">
       <div class="player-tabs">
@@ -25,13 +25,25 @@
         <button type="button" data-tab="original" class="tab">Original</button>
         <span class="grow"></span>
         <button type="button" id="player-fs" class="icon" title="Fullscreen" aria-label="Fullscreen">⛶</button>
+        <button type="button" id="player-min" class="icon" title="Keep playing below the list" aria-label="Minimise">▾</button>
         <button type="button" id="player-close" class="icon" title="Close" aria-label="Close">✕</button>
       </div>
       <div id="player-title" class="player-title"></div>
-      <div id="player-frame" class="player-frame"><div id="yt"></div></div>
+      <div id="player-frame" class="player-frame">
+        <div id="yt"></div>
+        <div id="player-loading" class="player-loading" hidden><span class="loading">Loading player </span></div>
+      </div>
       <div id="player-fallback" class="player-fallback" hidden>
-        <p id="player-fallback-text">This video can't play inside Telegram.</p>
-        <button type="button" id="player-open" class="btn">Open in YouTube</button>
+        <p id="player-fallback-text">This video can't play inside the app.</p>
+        <button type="button" id="player-open-big" class="btn big">▶ Open in YouTube</button>
+      </div>
+      <div class="player-foot">
+        <button type="button" id="player-open" class="btn secondary">↗ Open in YouTube</button>
+      </div>
+      <div class="mini-ctl">
+        <div id="mini-title" class="mini-title"></div>
+        <button type="button" id="mini-expand" class="icon" title="Open the player" aria-label="Open the player">⤢</button>
+        <button type="button" id="mini-close" class="icon" title="Stop" aria-label="Stop">✕</button>
       </div>
     </div>
   </div>
@@ -66,6 +78,7 @@
     </form>
   </div>
 
+  <script src="player.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
